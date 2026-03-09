@@ -16,7 +16,7 @@ use crate::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
     },
-    note::{ExtractedNoteCommitment, Note, Nullifier, Rho, TransmittedNoteCiphertext},
+    note::{ExtractedNoteCommitment, Note, NoteVersion, Nullifier, Rho, TransmittedNoteCiphertext},
     note_encryption::OrchardNoteEncryption,
     primitives::redpallas::{self, Binding, SpendAuth},
     tree::{Anchor, MerklePath},
@@ -335,6 +335,7 @@ pub struct OutputInfo {
     recipient: Address,
     value: NoteValue,
     memo: [u8; 512],
+    note_version: NoteVersion,
 }
 
 impl OutputInfo {
@@ -350,6 +351,24 @@ impl OutputInfo {
             recipient,
             value,
             memo,
+            note_version: NoteVersion::V2,
+        }
+    }
+
+    /// Constructs a new OutputInfo with a specific note version.
+    pub fn new_versioned(
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        note_version: NoteVersion,
+    ) -> Self {
+        Self {
+            ovk,
+            recipient,
+            value,
+            memo,
+            note_version,
         }
     }
 
@@ -375,7 +394,7 @@ impl OutputInfo {
         mut rng: impl RngCore,
     ) -> (Note, ExtractedNoteCommitment, TransmittedNoteCiphertext) {
         let rho = Rho::from_nf_old(nf_old);
-        let note = Note::new(self.recipient, self.value, rho, &mut rng);
+        let note = Note::new_versioned(self.recipient, self.value, rho, &mut rng, self.note_version);
         let cm_new = note.commitment();
         let cmx = cm_new.into();
 
@@ -545,6 +564,7 @@ pub struct Builder {
     outputs: Vec<OutputInfo>,
     bundle_type: BundleType,
     anchor: Anchor,
+    note_version: NoteVersion,
 }
 
 impl Builder {
@@ -555,7 +575,13 @@ impl Builder {
             outputs: vec![],
             bundle_type,
             anchor,
+            note_version: NoteVersion::V2,
         }
+    }
+
+    /// Sets the default note version for outputs added to this builder.
+    pub fn set_note_version(&mut self, version: NoteVersion) {
+        self.note_version = version;
     }
 
     /// Adds a note to be spent in this transaction.
@@ -607,7 +633,7 @@ impl Builder {
         }
 
         self.outputs
-            .push(OutputInfo::new(ovk, recipient, value, memo));
+            .push(OutputInfo::new_versioned(ovk, recipient, value, memo, self.note_version));
 
         Ok(())
     }
