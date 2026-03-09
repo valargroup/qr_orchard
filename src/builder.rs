@@ -340,6 +340,8 @@ pub struct OutputInfo {
 
 impl OutputInfo {
     /// Constructs a new OutputInfo from its constituent parts.
+    /// This defaults to NoteVersion::V2, for compatability with existing wallets.
+    /// After a coordinated upgrade height for default sends being QR is decided upon, this will be updated to NoteVersion::Qr.
     pub fn new(
         ovk: Option<OutgoingViewingKey>,
         recipient: Address,
@@ -564,7 +566,6 @@ pub struct Builder {
     outputs: Vec<OutputInfo>,
     bundle_type: BundleType,
     anchor: Anchor,
-    note_version: NoteVersion,
 }
 
 impl Builder {
@@ -575,13 +576,7 @@ impl Builder {
             outputs: vec![],
             bundle_type,
             anchor,
-            note_version: NoteVersion::V2,
         }
-    }
-
-    /// Sets the default note version for outputs added to this builder.
-    pub fn set_note_version(&mut self, version: NoteVersion) {
-        self.note_version = version;
     }
 
     /// Adds a note to be spent in this transaction.
@@ -620,6 +615,8 @@ impl Builder {
     }
 
     /// Adds an address which will receive funds in this transaction.
+    /// Defaults to the note version that is standard in the current protocol;
+    /// this default may change across wallet SDK updates as the protocol evolves.
     pub fn add_output(
         &mut self,
         ovk: Option<OutgoingViewingKey>,
@@ -627,13 +624,26 @@ impl Builder {
         value: NoteValue,
         memo: [u8; 512],
     ) -> Result<(), OutputError> {
+        self.add_versioned_output(ovk, recipient, value, memo, NoteVersion::V2)
+    }
+
+    /// Adds an address which will receive funds in this transaction,
+    /// using the specified note version for rcm derivation.
+    pub fn add_versioned_output(
+        &mut self,
+        ovk: Option<OutgoingViewingKey>,
+        recipient: Address,
+        value: NoteValue,
+        memo: [u8; 512],
+        note_version: NoteVersion,
+    ) -> Result<(), OutputError> {
         let flags = self.bundle_type.flags();
         if !flags.outputs_enabled() {
             return Err(OutputError::OutputsDisabled);
         }
 
         self.outputs
-            .push(OutputInfo::new_versioned(ovk, recipient, value, memo, self.note_version));
+            .push(OutputInfo::new_versioned(ovk, recipient, value, memo, note_version));
 
         Ok(())
     }
