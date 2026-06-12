@@ -11,7 +11,7 @@ use rand::{prelude::SliceRandom, CryptoRng, RngCore};
 
 use crate::{
     address::Address,
-    bundle::{Authorization, Authorized, Bundle, Flags},
+    bundle::{Authorization, Authorized, Bundle, BundleProtocol, Flags},
     keys::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
@@ -278,6 +278,22 @@ impl fmt::Display for OutputError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for OutputError {}
+
+/// Error returned when [`Builder::require_bundle`] is called on a coinbase builder.
+///
+/// Coinbase bundles contain exactly the outputs added to the builder; forcing a
+/// bundle with dummy-only actions has no protocol meaning for coinbase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BundleRequiredError;
+
+impl fmt::Display for BundleRequiredError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("require_bundle is not applicable to coinbase bundles")
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for BundleRequiredError {}
 
 /// Information about a specific note to be spent in an [`Action`].
 #[derive(Debug)]
@@ -675,16 +691,43 @@ pub struct Builder {
     outputs: Vec<OutputInfo>,
     bundle_type: BundleType,
     anchor: Anchor,
+    protocol: BundleProtocol,
 }
 
 impl Builder {
-    /// Constructs a new empty builder for an Orchard bundle.
-    pub fn new(bundle_type: BundleType, anchor: Anchor) -> Self {
+    /// Constructs a new empty builder for the given [`BundleProtocol`].
+    ///
+    /// The [`BundleType`], [`Flags`], and circuit version are all derived from `protocol`.
+    /// Use [`Builder::build`] to finalize — no circuit version argument needed.
+    pub fn new(protocol: BundleProtocol, anchor: Anchor) -> Self {
         Builder {
             spends: vec![],
             outputs: vec![],
-            bundle_type,
+            bundle_type: BundleType::Transactional {
+                flags: protocol.flags(),
+                bundle_required: false,
+            },
             anchor,
+            protocol,
+        }
+    }
+
+    /// Constructs a new coinbase builder for the Ironwood pool.
+    ///
+    /// Coinbase bundles have spends disabled and contain exactly the outputs added —
+    /// no `MIN_ACTIONS` padding is applied. Orchard pool coinbase is prohibited by
+    /// consensus; only the Ironwood pool accepts coinbase bundles.
+    ///
+    /// Use [`Builder::new`] with [`BundleProtocol::Ironwood`] for transactional bundles.
+    pub fn new_coinbase(anchor: Anchor) -> Self {
+        Builder {
+            spends: vec![],
+            outputs: vec![],
+            bundle_type: BundleType::Coinbase,
+            anchor,
+            // Coinbase structure is tracked by `bundle_type`. `protocol` is only used
+            // to derive OrchardCircuitVersion::Ironwood at build time.
+            protocol: BundleProtocol::Ironwood,
         }
     }
 
@@ -816,6 +859,27 @@ impl Builder {
         Ok(())
     }
 
+    /// Forces this builder to produce a bundle even if no spends or outputs have been added.
+    ///
+    /// Normally, a builder with no real spends or outputs returns `None` from
+    /// [`Builder::build`]. After calling this method, [`Builder::build`] is guaranteed to
+    /// return `Some(_)`, producing a bundle of `MIN_ACTIONS` dummy actions.
+    ///
+    /// Returns [`BundleRequiredError`] if called on a coinbase builder (created via
+    /// [`Builder::new_coinbase`]). Coinbase bundles contain exactly the outputs added;
+    /// an all-dummy coinbase bundle has no protocol meaning.
+    pub fn require_bundle(&mut self) -> Result<&mut Self, BundleRequiredError> {
+        match &mut self.bundle_type {
+            BundleType::Transactional {
+                bundle_required, ..
+            } => {
+                *bundle_required = true;
+                Ok(self)
+            }
+            BundleType::Coinbase => Err(BundleRequiredError),
+        }
+    }
+
     /// Returns the action spend components that will be produced by the
     /// transaction being constructed
     pub fn spends(&self) -> &Vec<impl InputView<()>> {
@@ -858,17 +922,19 @@ impl Builder {
     ///
     /// The returned bundle will have no proof or signatures; these can be applied with
     /// [`Bundle::create_proof`] and [`Bundle::apply_signatures`] respectively.
-    /// See [`OrchardCircuitVersion`] for which version to use.
+    ///
+    /// The circuit version is derived from the [`BundleProtocol`] passed to
+    /// [`Builder::new`].
     #[cfg(feature = "circuit")]
     pub fn build<V: TryFrom<i64>>(
         self,
         rng: impl RngCore,
-        circuit_version: OrchardCircuitVersion,
     ) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
         let anchor = self.anchor;
         let bundle_type = self.bundle_type;
         let spends = self.spends;
         let outputs = self.outputs;
+        let circuit_version = self.protocol.circuit_version();
 
         build_bundle(
             rng,
@@ -930,19 +996,54 @@ impl Builder {
     }
 }
 
-/// Builds a bundle containing the given spent notes and outputs, with the Action circuits built
-/// for the given `circuit_version`.
+/// Builds a coinbase bundle for the Ironwood pool from pre-computed outputs.
 ///
-/// See [`OrchardCircuitVersion`] for which version to use.
+/// Coinbase bundles have spends disabled and contain exactly the provided outputs —
+/// no `MIN_ACTIONS` padding is applied. Callers that prefer the builder pattern
+/// should use [`Builder::new_coinbase`] instead.
+///
+/// Returns `None` if `outputs` is empty.
+#[cfg(feature = "circuit")]
+pub fn coinbase_bundle<V: TryFrom<i64>>(
+    rng: impl RngCore,
+    anchor: Anchor,
+    outputs: Vec<OutputInfo>,
+) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
+    build_bundle(
+        rng,
+        anchor,
+        BundleType::Coinbase,
+        vec![],
+        outputs,
+        |pre_actions, flags, value_balance, bundle_meta, rng| {
+            finish_unauthorized_bundle(
+                pre_actions,
+                flags,
+                value_balance,
+                bundle_meta,
+                rng,
+                anchor,
+                OrchardCircuitVersion::Ironwood,
+            )
+        },
+    )
+}
+
+/// Builds a bundle containing the given spent notes and outputs, with the Action circuits built
+/// The circuit version is derived from `protocol`.
 #[cfg(feature = "circuit")]
 pub fn bundle<V: TryFrom<i64>>(
     rng: impl RngCore,
     anchor: Anchor,
-    bundle_type: BundleType,
+    protocol: BundleProtocol,
     spends: Vec<SpendInfo>,
     outputs: Vec<OutputInfo>,
-    circuit_version: OrchardCircuitVersion,
 ) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
+    let circuit_version = protocol.circuit_version();
+    let bundle_type = BundleType::Transactional {
+        flags: protocol.flags(),
+        bundle_required: false,
+    };
     build_bundle(
         rng,
         anchor,
@@ -1493,7 +1594,7 @@ pub mod testing {
 
     use crate::{
         address::testing::arb_address,
-        bundle::{Authorized, Bundle},
+        bundle::{Authorized, Bundle, BundleProtocol},
         circuit::{OrchardCircuitVersion, ProvingKey},
         keys::{testing::arb_spending_key, FullViewingKey, SpendAuthorizingKey, SpendingKey},
         note::testing::arb_note,
@@ -1502,7 +1603,7 @@ pub mod testing {
         Address, Note,
     };
 
-    use super::{Builder, BundleType};
+    use super::Builder;
 
     /// An intermediate type used for construction of arbitrary
     /// bundle values. This type is required because of a limitation
@@ -1525,7 +1626,7 @@ pub mod testing {
         /// Create a bundle from the set of arbitrary bundle inputs.
         fn into_bundle<V: TryFrom<i64>>(mut self) -> Bundle<Authorized, V> {
             let fvk = FullViewingKey::from(&self.sk);
-            let mut builder = Builder::new(BundleType::DEFAULT, self.anchor);
+            let mut builder = Builder::new(BundleProtocol::Ironwood, self.anchor);
 
             for (note, path) in self.notes.into_iter() {
                 builder.add_spend(fvk.clone(), note, path).unwrap();
@@ -1540,9 +1641,9 @@ pub mod testing {
                     .unwrap();
             }
 
-            let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+            let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
             builder
-                .build(&mut self.rng, OrchardCircuitVersion::FixedPostNu6_2)
+                .build(&mut self.rng)
                 .unwrap()
                 .unwrap()
                 .0
@@ -1624,11 +1725,13 @@ mod tests {
     use rand::rngs::OsRng;
     use rand::RngCore;
 
-    use super::{bundle, BuildError, Builder, MaybeSigned, OutputError, OutputInfo};
+    use super::{
+        bundle, coinbase_bundle, BuildError, Builder, BundleRequiredError, MaybeSigned,
+        OutputError, OutputInfo, MIN_ACTIONS,
+    };
     use crate::{
-        builder::BundleType,
-        bundle::{Authorized, Bundle, Flags},
-        circuit::{OrchardCircuitVersion, ProvingKey},
+        bundle::{Authorized, Bundle, BundleProtocol},
+        circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
         constants::MERKLE_DEPTH_ORCHARD,
         keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
         note::{Nullifier, Rho},
@@ -1651,21 +1754,17 @@ mod tests {
         (note, merkle_path, anchor)
     }
 
-    fn restricted_bundle_type(bundle_required: bool) -> BundleType {
-        BundleType::Transactional {
-            flags: Flags::CROSS_ADDRESS_DISABLED,
-            bundle_required,
-        }
-    }
-
-    /// Creates a builder of the given bundle type over the empty-tree anchor, with a
+    /// Creates a builder for the Ironwood pool over the empty-tree anchor, with a
     /// single 5000-zat output to a freshly derived external address.
-    fn output_only_builder(rng: &mut impl RngCore, bundle_type: BundleType) -> Builder {
+    fn output_only_builder(rng: &mut impl RngCore) -> Builder {
         let sk = SpendingKey::random(rng);
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u32, Scope::External);
 
-        let mut builder = Builder::new(bundle_type, EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into());
+        let mut builder = Builder::new(
+            BundleProtocol::Ironwood,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
         builder
             .add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512])
             .expect("output-only builders accept ordinary outputs");
@@ -1674,15 +1773,15 @@ mod tests {
 
     #[test]
     fn shielding_bundle() {
-        let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+        let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
         let mut rng = OsRng;
 
-        let builder = output_only_builder(&mut rng, BundleType::DEFAULT);
+        let builder = output_only_builder(&mut rng);
         let balance: i64 = builder.value_balance().unwrap();
         assert_eq!(balance, -5000);
 
         let bundle: Bundle<Authorized, i64> = builder
-            .build(&mut rng, OrchardCircuitVersion::FixedPostNu6_2)
+            .build(&mut rng)
             .unwrap()
             .unwrap()
             .0
@@ -1692,34 +1791,6 @@ mod tests {
             .finalize()
             .unwrap();
         assert_eq!(bundle.value_balance(), &(-5000))
-    }
-
-    #[test]
-    fn coinbase_bundle_builds_for_ironwood() {
-        let mut rng = OsRng;
-
-        // Coinbase bundles never set `disableCrossAddress`, so under the Ironwood
-        // circuit version they serve a pool that accepts unrestricted
-        // (`disableCrossAddress = 0`) bundles. A pool whose rules require
-        // `disableCrossAddress = 1` on every bundle prohibits coinbase entirely;
-        // that prohibition is a consensus rule outside this crate.
-        let builder = output_only_builder(&mut rng, BundleType::Coinbase);
-
-        let (bundle, _) = builder
-            .build::<i64>(&mut rng, OrchardCircuitVersion::Ironwood)
-            .expect("coinbase bundles build under the Ironwood circuit version")
-            .expect("a bundle is produced for the requested output");
-        assert_eq!(bundle.actions().len(), 1);
-        assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
-        assert!(!bundle.flags().spends_enabled());
-        assert!(bundle.flags().outputs_enabled());
-        assert!(!bundle.flags().cross_address_disabled());
-    }
-
-    #[test]
-    fn coinbase_bundle_type_uses_spends_disabled_flags() {
-        assert_eq!(BundleType::Coinbase.flags(), Flags::SPENDS_DISABLED);
-        assert!(!BundleType::Coinbase.flags().cross_address_disabled());
     }
 
     #[test]
@@ -1734,7 +1805,7 @@ mod tests {
         let (note, merkle_path, anchor) =
             note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
 
-        let mut builder = Builder::new(restricted_bundle_type(false), anchor);
+        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
         assert_eq!(
             builder.add_output(
                 None,
@@ -1816,7 +1887,7 @@ mod tests {
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u32, Scope::Internal);
         let mut builder = Builder::new(
-            restricted_bundle_type(true),
+            BundleProtocol::Orchard,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
         );
 
@@ -1857,7 +1928,7 @@ mod tests {
             bundle::<i64>(
                 &mut rng,
                 EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-                restricted_bundle_type(false),
+                BundleProtocol::Orchard,
                 vec![],
                 vec![OutputInfo::new(
                     None,
@@ -1865,7 +1936,6 @@ mod tests {
                     NoteValue::from_raw(5_000),
                     [0u8; 512],
                 )],
-                OrchardCircuitVersion::Ironwood,
             ),
             Err(BuildError::CrossAddressDisabled)
         ));
@@ -1876,10 +1946,9 @@ mod tests {
         let (bundle, bundle_meta) = bundle::<i64>(
             &mut rng,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-            restricted_bundle_type(false),
+            BundleProtocol::Orchard,
             vec![],
             vec![change_output],
-            OrchardCircuitVersion::Ironwood,
         )
         .unwrap()
         .unwrap();
@@ -1900,7 +1969,7 @@ mod tests {
         let (note, merkle_path, anchor) =
             note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
 
-        let mut builder = Builder::new(restricted_bundle_type(false), anchor);
+        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
         builder.add_spend(spend_fvk, note, merkle_path).unwrap();
         builder
             .add_change_output(
@@ -1912,11 +1981,7 @@ mod tests {
             )
             .unwrap();
 
-        let bundle = builder
-            .build::<i64>(&mut rng, OrchardCircuitVersion::Ironwood)
-            .unwrap()
-            .unwrap()
-            .0;
+        let bundle = builder.build::<i64>(&mut rng).unwrap().unwrap().0;
 
         fn num_unsigned<P: core::fmt::Debug>(
             bundle: &Bundle<super::InProgress<P, super::PartiallyAuthorized>, i64>,
@@ -1941,7 +2006,7 @@ mod tests {
         // A change-only bundle: the padding dummy spend is signed during `prepare`, so
         // a single `sign` call with the change key completes the actions.
         let mut builder = Builder::new(
-            restricted_bundle_type(false),
+            BundleProtocol::Orchard,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
         );
         builder
@@ -1955,7 +2020,7 @@ mod tests {
             .unwrap();
 
         let bundle = builder
-            .build::<i64>(&mut rng, OrchardCircuitVersion::Ironwood)
+            .build::<i64>(&mut rng)
             .unwrap()
             .unwrap()
             .0
@@ -1980,7 +2045,7 @@ mod tests {
         let (note, merkle_path, anchor) =
             note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
 
-        let mut builder = Builder::new(restricted_bundle_type(false), anchor);
+        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
         builder.add_spend(spend_fvk, note, merkle_path).unwrap();
         builder
             .add_change_output(
@@ -2017,38 +2082,99 @@ mod tests {
     }
 
     #[test]
-    fn create_proof_supports_cross_address_disabled_only_for_ironwood() {
-        let build_bundle = |rng: &mut OsRng, circuit_version: OrchardCircuitVersion| {
-            let flags = Flags::CROSS_ADDRESS_DISABLED;
-
-            let builder = Builder::new(
-                BundleType::Transactional {
-                    flags,
-                    bundle_required: true,
-                },
-                EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-            );
-
-            builder
-                .build::<i64>(rng, circuit_version)
-                .unwrap()
-                .unwrap()
-                .0
-        };
-
+    fn orchard_protocol_bundle_requires_ironwood_key() {
+        // BundleProtocol::Orchard always uses OrchardCircuitVersion::Ironwood.
+        // Creating a proof with the Ironwood key must succeed; verifying with the
+        // FixedPostNu6_2 key must fail because the circuits are distinct.
         let mut rng = OsRng;
-        let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
-        let bundle = build_bundle(&mut rng, OrchardCircuitVersion::FixedPostNu6_2);
+        let sk = SpendingKey::from_bytes([0; 32]).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let change_addr = fvk.address_at(0u32, Scope::Internal);
 
-        assert!(matches!(
-            bundle.create_proof(&pk, &mut rng),
-            Err(BuildError::Proof(
-                halo2_proofs::plonk::Error::InvalidInstances
-            )),
-        ));
+        let mut builder = Builder::new(
+            BundleProtocol::Orchard,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
+        builder
+            .add_change_output(
+                fvk.clone(),
+                None,
+                change_addr,
+                NoteValue::from_raw(1000),
+                [0u8; 512],
+            )
+            .unwrap();
+        let bundle = builder.build::<i64>(&mut rng).unwrap().unwrap().0;
+
+        assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
+        assert!(bundle.flags().cross_address_disabled());
+
+        let ironwood_pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
+        let ironwood_vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
+        let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+
+        let proven = bundle.create_proof(&ironwood_pk, &mut rng).unwrap();
+        let sighash: [u8; 32] = proven.commitment().into();
+        let authorized = proven
+            .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
+            .unwrap();
+        assert!(matches!(authorized.verify_proof(&ironwood_vk), Ok(())));
+        assert!(authorized.verify_proof(&fixed_vk).is_err());
+    }
+
+    #[test]
+    fn require_bundle_forces_dummy_bundle_when_empty() {
+        let mut rng = OsRng;
+        let empty_anchor = EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into();
+
+        // Transactional: empty builder normally returns None; require_bundle forces Some.
+        for protocol in [BundleProtocol::Orchard, BundleProtocol::Ironwood] {
+            let mut builder = Builder::new(protocol, empty_anchor);
+            builder
+                .require_bundle()
+                .expect("require_bundle should succeed for transactional");
+            let (bundle, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+            assert_eq!(bundle.actions().len(), MIN_ACTIONS);
+        }
+
+        // Coinbase builder: require_bundle returns Err.
+        let mut cb = Builder::new_coinbase(empty_anchor);
+        assert!(matches!(cb.require_bundle(), Err(BundleRequiredError)));
+    }
+
+    #[test]
+    fn coinbase_bundle_proves_and_verifies() {
+        let mut rng = OsRng;
+        let sk = SpendingKey::from_bytes([0; 32]).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let recipient = fvk.address_at(0u32, Scope::External);
+        let anchor = EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into();
+
+        let output = OutputInfo::new(None, recipient, NoteValue::from_raw(5000), [0u8; 512]);
+        let (bundle, _) = coinbase_bundle::<i64>(&mut rng, anchor, vec![output])
+            .unwrap()
+            .unwrap();
+
+        // Exactly one action, no padding, spends disabled, cross-address unset.
+        assert_eq!(bundle.actions().len(), 1);
+        assert!(!bundle.flags().spends_enabled());
+        assert!(!bundle.flags().cross_address_disabled());
+        assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
 
         let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
-        let bundle = build_bundle(&mut rng, OrchardCircuitVersion::Ironwood);
-        bundle.create_proof(&pk, &mut rng).unwrap();
+        let ironwood_vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
+        let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+
+        let proven = bundle.create_proof(&pk, &mut rng).unwrap();
+        let sighash: [u8; 32] = proven.commitment().into();
+        let authorized = proven.apply_signatures(rng, sighash, &[]).unwrap();
+
+        assert!(matches!(authorized.verify_proof(&ironwood_vk), Ok(())));
+        assert!(authorized.verify_proof(&fixed_vk).is_err());
+
+        // Empty outputs produces None.
+        assert!(coinbase_bundle::<i64>(&mut rng, anchor, vec![])
+            .unwrap()
+            .is_none());
     }
 }

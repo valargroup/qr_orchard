@@ -1,11 +1,11 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use orchard::{
-    builder::{Builder, BundleType},
+    builder::Builder,
     circuit::{OrchardCircuitVersion, ProvingKey},
     keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey},
     note_encryption::{CompactAction, OrchardDomain},
     value::NoteValue,
-    Anchor, Bundle,
+    Anchor, Bundle, BundleProtocol,
 };
 use rand::rngs::OsRng;
 use zcash_note_encryption::{batch, try_compact_note_decryption, try_note_decryption};
@@ -44,7 +44,10 @@ fn bench_note_decryption(c: &mut Criterion) {
         .collect();
 
     let bundle = {
-        let mut builder = Builder::new(BundleType::DEFAULT, Anchor::from_bytes([0; 32]).unwrap());
+        let mut builder = Builder::new(
+            BundleProtocol::Ironwood,
+            Anchor::from_bytes([0; 32]).unwrap(),
+        );
         // The builder pads to two actions, and shuffles their order. Add two recipients
         // so the first action is always decryptable.
         builder
@@ -53,11 +56,7 @@ fn bench_note_decryption(c: &mut Criterion) {
         builder
             .add_output(None, recipient, NoteValue::from_raw(10), [0; 512])
             .unwrap();
-        let bundle: Bundle<_, i64> = builder
-            .build(rng, OrchardCircuitVersion::FixedPostNu6_2)
-            .unwrap()
-            .unwrap()
-            .0;
+        let bundle: Bundle<_, i64> = builder.build(rng).unwrap().unwrap().0;
         bundle
             .create_proof(&pk, rng)
             .unwrap()

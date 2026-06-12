@@ -2,15 +2,15 @@
 
 use incrementalmerkletree::{Hashable, Marking, Retention};
 use orchard::{
-    builder::{Builder, BundleType},
-    bundle::{Authorized, BatchValidator, Flags},
+    builder::Builder,
+    bundle::{Authorized, BatchValidator},
     circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
     keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
     note::ExtractedNoteCommitment,
     note_encryption::OrchardDomain,
     tree::{MerkleHashOrchard, MerklePath},
     value::NoteValue,
-    Address, Bundle,
+    Address, Bundle, BundleProtocol,
 };
 use rand::rngs::OsRng;
 use shardtree::{store::memory::MemoryShardStore, ShardTree};
@@ -53,17 +53,11 @@ fn verify_bundle(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey) {
     );
 }
 
-/// The output-only bundle type used by the shielding steps of these tests.
-const SHIELDING: BundleType = BundleType::Transactional {
-    flags: Flags::SPENDS_DISABLED,
-    bundle_required: false,
-};
-
-/// Creates a builder of the given bundle type over the empty-tree anchor, with a
+/// Creates a builder for the given protocol over the empty-tree anchor, with a
 /// single 5000-zat output to `recipient`.
-fn output_only_builder(bundle_type: BundleType, recipient: Address) -> Builder {
+fn output_only_builder(protocol: BundleProtocol, recipient: Address) -> Builder {
     let anchor = MerkleHashOrchard::empty_root(32.into()).into();
-    let mut builder = Builder::new(bundle_type, anchor);
+    let mut builder = Builder::new(protocol, anchor);
     assert_eq!(
         builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
         Ok(())
@@ -74,8 +68,8 @@ fn output_only_builder(bundle_type: BundleType, recipient: Address) -> Builder {
 #[test]
 fn bundle_chain() {
     let mut rng = OsRng;
-    let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
-    let vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+    let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
+    let vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
 
     let sk = SpendingKey::from_bytes([0; 32]).unwrap();
     let fvk = FullViewingKey::from(&sk);
@@ -83,11 +77,8 @@ fn bundle_chain() {
 
     // Create a shielding bundle.
     let shielding_bundle: Bundle<_, i64> = {
-        let builder = output_only_builder(SHIELDING, recipient);
-        let (unauthorized, bundle_meta) = builder
-            .build(&mut rng, OrchardCircuitVersion::FixedPostNu6_2)
-            .unwrap()
-            .unwrap();
+        let builder = output_only_builder(BundleProtocol::Ironwood, recipient);
+        let (unauthorized, bundle_meta) = builder.build(&mut rng).unwrap().unwrap();
 
         assert_eq!(
             unauthorized
@@ -125,16 +116,13 @@ fn bundle_chain() {
         let cmx: ExtractedNoteCommitment = note.commitment().into();
         let (root, merkle_path) = single_leaf_witness(&cmx);
 
-        let mut builder = Builder::new(BundleType::DEFAULT, root.into());
+        let mut builder = Builder::new(BundleProtocol::Ironwood, root.into());
         assert_eq!(builder.add_spend(fvk, note, merkle_path), Ok(()));
         assert_eq!(
             builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
             Ok(())
         );
-        let (unauthorized, _) = builder
-            .build(&mut rng, OrchardCircuitVersion::FixedPostNu6_2)
-            .unwrap()
-            .unwrap();
+        let (unauthorized, _) = builder.build(&mut rng).unwrap().unwrap();
         let sighash = unauthorized.commitment().into();
         let proven = unauthorized.create_proof(&pk, &mut rng).unwrap();
         proven
@@ -144,34 +132,6 @@ fn bundle_chain() {
 
     // Verify the shielded bundle.
     verify_bundle(&shielded_bundle, &vk);
-}
-
-// A bundle built with the circuit version set to `InsecurePreNu6_2` produces a proof against
-// the historical (insecure) circuit, which verifies under the insecure verifying key but not
-// the fixed one. This is the path that lets tests reproduce pre-NU6.2 proofs.
-#[test]
-fn builder_builds_for_insecure_circuit_version() {
-    let mut rng = OsRng;
-    let insecure_pk = ProvingKey::build(OrchardCircuitVersion::InsecurePreNu6_2);
-    let insecure_vk = VerifyingKey::build(OrchardCircuitVersion::InsecurePreNu6_2);
-    let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
-
-    let sk = SpendingKey::from_bytes([0; 32]).unwrap();
-    let fvk = FullViewingKey::from(&sk);
-    let recipient = fvk.address_at(0u32, Scope::External);
-
-    let builder = output_only_builder(SHIELDING, recipient);
-
-    let (unauthorized, _) = builder
-        .build::<i64>(&mut rng, OrchardCircuitVersion::InsecurePreNu6_2)
-        .unwrap()
-        .unwrap();
-    let sighash: [u8; 32] = unauthorized.commitment().into();
-    let proven = unauthorized.create_proof(&insecure_pk, &mut rng).unwrap();
-    let bundle = proven.apply_signatures(rng, sighash, &[]).unwrap();
-
-    assert!(matches!(bundle.verify_proof(&insecure_vk), Ok(())));
-    assert!(bundle.verify_proof(&fixed_vk).is_err());
 }
 
 #[test]
@@ -184,12 +144,9 @@ fn builder_builds_for_ironwood_circuit_version() {
     let fvk = FullViewingKey::from(&sk);
     let recipient = fvk.address_at(0u32, Scope::External);
 
-    let builder = output_only_builder(SHIELDING, recipient);
+    let builder = output_only_builder(BundleProtocol::Ironwood, recipient);
 
-    let (unauthorized, _) = builder
-        .build::<i64>(&mut rng, OrchardCircuitVersion::Ironwood)
-        .unwrap()
-        .unwrap();
+    let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
     assert_eq!(
         unauthorized.circuit_version(),
         OrchardCircuitVersion::Ironwood
@@ -202,36 +159,42 @@ fn builder_builds_for_ironwood_circuit_version() {
     verify_bundle(&bundle, &ironwood_vk);
 }
 
-// Coinbase bundles never set `disableCrossAddress`; under the Ironwood circuit
-// version they serve a pool that accepts unrestricted bundles (e.g. ZIP 213-style
-// shielded coinbase). A pool whose consensus rules require
-// `disableCrossAddress = 1` on every bundle prohibits coinbase entirely; that rule
-// lives outside this crate.
+// Ironwood pool coinbase: a single output-only action, no padding, spends disabled,
+// disableCrossAddress unset. Verifies under the Ironwood VK; rejected by FixedPostNu6_2.
 #[test]
-fn ironwood_coinbase_bundle_proves_and_verifies() {
+fn ironwood_coinbase_proves_and_verifies() {
     let mut rng = OsRng;
     let ironwood_pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
     let ironwood_vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
+    let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
 
     let sk = SpendingKey::from_bytes([0; 32]).unwrap();
     let fvk = FullViewingKey::from(&sk);
     let recipient = fvk.address_at(0u32, Scope::External);
 
-    let builder = output_only_builder(BundleType::Coinbase, recipient);
+    let anchor = MerkleHashOrchard::empty_root(32.into()).into();
+    let mut builder = Builder::new_coinbase(anchor);
+    assert_eq!(
+        builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
+        Ok(())
+    );
 
-    let (unauthorized, _) = builder
-        .build::<i64>(&mut rng, OrchardCircuitVersion::Ironwood)
-        .unwrap()
-        .unwrap();
+    let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+
     assert_eq!(unauthorized.actions().len(), 1);
     assert!(!unauthorized.flags().spends_enabled());
     assert!(!unauthorized.flags().cross_address_disabled());
+    assert_eq!(
+        unauthorized.circuit_version(),
+        OrchardCircuitVersion::Ironwood
+    );
 
     let sighash: [u8; 32] = unauthorized.commitment().into();
     let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
     let bundle = proven.apply_signatures(rng, sighash, &[]).unwrap();
 
     verify_bundle(&bundle, &ironwood_vk);
+    assert!(bundle.verify_proof(&fixed_vk).is_err());
 }
 
 // An Ironwood bundle chain: an ordinary shielding bundle, followed by a bundle
@@ -249,12 +212,9 @@ fn ironwood_restricted_bundle_chain() {
     let recipient = fvk.address_at(0u32, Scope::External);
 
     let shielding_bundle: Bundle<_, i64> = {
-        let builder = output_only_builder(SHIELDING, recipient);
+        let builder = output_only_builder(BundleProtocol::Ironwood, recipient);
 
-        let (unauthorized, _) = builder
-            .build(&mut rng, OrchardCircuitVersion::Ironwood)
-            .unwrap()
-            .unwrap();
+        let (unauthorized, _) = builder.build(&mut rng).unwrap().unwrap();
         let sighash = unauthorized.commitment().into();
         let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
         proven.apply_signatures(rng, sighash, &[]).unwrap()
@@ -278,13 +238,7 @@ fn ironwood_restricted_bundle_chain() {
         let cmx: ExtractedNoteCommitment = note.commitment().into();
         let (root, merkle_path) = single_leaf_witness(&cmx);
 
-        let mut builder = Builder::new(
-            BundleType::Transactional {
-                flags: Flags::CROSS_ADDRESS_DISABLED,
-                bundle_required: false,
-            },
-            root.into(),
-        );
+        let mut builder = Builder::new(BundleProtocol::Orchard, root.into());
         assert_eq!(builder.add_spend(fvk.clone(), note, merkle_path), Ok(()));
         assert_eq!(
             builder.add_change_output(
@@ -296,10 +250,7 @@ fn ironwood_restricted_bundle_chain() {
             ),
             Ok(())
         );
-        let (unauthorized, bundle_meta) = builder
-            .build(&mut rng, OrchardCircuitVersion::Ironwood)
-            .unwrap()
-            .unwrap();
+        let (unauthorized, bundle_meta) = builder.build(&mut rng).unwrap().unwrap();
 
         assert_eq!(unauthorized.actions().len(), 2);
         assert_ne!(

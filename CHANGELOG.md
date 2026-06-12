@@ -15,6 +15,28 @@ a circuit version, and the `BundleFormat` of the transaction encoding they
 parse or serialize.
 
 ### Added
+- `orchard::BundleProtocol`, a single enum that encodes all three correlated
+  protocol choices — circuit version, flag-byte format, and `Flags` — that
+  previously had to be passed separately at construction, build, and
+  serialization time. One variant per pool:
+  - `BundleProtocol::Orchard` — Ironwood circuit, NU6.3 format,
+    `disableCrossAddress = 1` (V2 notes). Cross-address transfers are
+    prohibited by consensus in this pool.
+  - `BundleProtocol::Ironwood` — Ironwood circuit, NU6.3 format,
+    `disableCrossAddress = 0` (V3 QR notes). Cross-address transfers are
+    permitted.
+- `orchard::builder::Builder::new_coinbase`, a dedicated constructor for
+  ZIP 213-style shielded coinbase bundles into the Ironwood pool. Coinbase
+  bundles have spends disabled and no MIN_ACTIONS padding. Orchard pool
+  coinbase is prohibited by consensus and has no corresponding constructor.
+- `orchard::builder::Builder::require_bundle`, which forces the builder to
+  produce a bundle even when no real spends or outputs have been added
+  (producing a bundle of dummy-only actions). Returns
+  `orchard::builder::BundleRequiredError` for
+  coinbase builders (created via `Builder::new_coinbase`), where an
+  all-dummy coinbase bundle has no protocol meaning.
+- `orchard::builder::BundleRequiredError`, the error returned by
+  `Builder::require_bundle` when called on a coinbase builder.
 - `orchard::NoteVersion`, which identifies the Orchard note plaintext version
   used to derive a note commitment.
 - `orchard::NoteVersion::DEFAULT`, the note version produced by constructors
@@ -75,6 +97,16 @@ parse or serialize.
   `disableCrossAddress`; under `BundleFormat::PreNu6_3`, bit 2 remains
   reserved, and `Flags::to_byte` (which now returns `Option<u8>`) returns
   `None` if `disableCrossAddress` is set.
+- `orchard::builder::Builder::new` now takes `orchard::BundleProtocol`
+  instead of `orchard::builder::BundleType`. The circuit version, flag-byte
+  format, and flags are derived from the protocol; `BundleType` remains an
+  internal type. Use `Builder::new_coinbase` for coinbase bundles.
+- `orchard::builder::Builder::build` no longer takes an
+  `OrchardCircuitVersion` argument; the circuit version is derived from the
+  `BundleProtocol` passed to `Builder::new`.
+- `orchard::builder::bundle` (the free function) likewise derives circuit
+  version and bundle type from its `BundleProtocol` argument rather than
+  taking them separately.
 - Circuit-building APIs now take the intended `OrchardCircuitVersion`
   explicitly instead of implicitly selecting `FixedPostNu6_2` — pass
   `FixedPostNu6_2` for the previous behavior, or `Ironwood` for restricted
@@ -82,8 +114,6 @@ parse or serialize.
   - `orchard::circuit::ProvingKey::build`
   - `orchard::circuit::VerifyingKey::build`
   - `orchard::circuit::Circuit::from_action_context`
-  - `orchard::builder::Builder::build` (`Builder::new` no longer selects a
-    circuit version)
   - `orchard::builder::bundle`
 - `orchard::circuit::Instance::from_parts` now takes an
   `orchard::bundle::Flags` argument instead of separate spend/output enable
@@ -134,13 +164,16 @@ parse or serialize.
   that set that flag.
 
 ### Removed
+- `orchard::builder::BundleType` as a caller-facing type. It remains internal
+  to the builder but is no longer part of the public API surface. Pass
+  `orchard::BundleProtocol` to `Builder::new` and `builder::bundle` instead.
 - The temporary `_for_version` APIs from `0.14.0`; pass the intended
   `OrchardCircuitVersion` to the plain APIs listed above instead:
   - `orchard::circuit::ProvingKey::build_for_version`
   - `orchard::circuit::VerifyingKey::build_for_version`
   - `orchard::circuit::Circuit::from_action_context_for_version`
-  - `orchard::builder::Builder::new_for_version` (use `Builder::new` and pass
-    the circuit version to `Builder::build`)
+  - `orchard::builder::Builder::new_for_version` (use `Builder::new` with the
+    desired `BundleProtocol`)
   - `orchard::builder::bundle_for_version`
 - The `Default` impls for `orchard::circuit::Circuit` and
   `orchard::circuit::OrchardCircuitVersion`; callers must choose a circuit

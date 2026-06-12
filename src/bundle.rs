@@ -65,6 +65,96 @@ pub enum BundleFormat {
     Nu6_3,
 }
 
+/// Selects the pool and circuit semantics for an Orchard bundle.
+///
+/// Encodes the three correlated choices a caller would otherwise have to pass
+/// separately — circuit version, flag-byte format, and cross-address policy —
+/// as a single value.
+///
+/// Both variants use [`OrchardCircuitVersion::Ironwood`] and [`BundleFormat::Nu6_3`].
+/// They differ on [`Flags`] and default note version:
+///
+/// | Pool | `disableCrossAddress` | Note version | Cross-address transfers |
+/// |------|-----------------------|--------------|-------------------------|
+/// | [`Orchard`] | `1` (forced) | V2 | Prohibited by consensus |
+/// | [`Ironwood`] | `0` | V3 (ZIP 2005 QR) | Permitted |
+///
+/// [`Orchard`]: BundleProtocol::Orchard
+/// [`Ironwood`]: BundleProtocol::Ironwood
+/// [`OrchardCircuitVersion::Ironwood`]: crate::circuit::OrchardCircuitVersion::Ironwood
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleProtocol {
+    /// The Orchard pool at NU6.3+.
+    ///
+    /// Uses the Ironwood circuit and NU6.3 flag-byte format.
+    /// `disableCrossAddress = 1` is required by consensus — cross-address transfers
+    /// are prohibited. Notes use the V2 (ZIP 212) plaintext format.
+    ///
+    /// Coinbase bundles are structurally incompatible with this pool because they
+    /// hard-code `disableCrossAddress = 0`; the pool's consensus rules prohibit them.
+    Orchard,
+    /// The Ironwood pool (QR).
+    ///
+    /// Uses the Ironwood circuit and NU6.3 flag-byte format.
+    /// `disableCrossAddress = 0` — cross-address transfers are permitted.
+    /// Notes use the V3 (ZIP 2005 quantum-recoverable) plaintext format.
+    ///
+    /// For coinbase bundles in this pool, use [`Builder::new_coinbase`] instead of
+    /// [`Builder::new`].
+    ///
+    /// [`Builder::new`]: crate::builder::Builder::new
+    /// [`Builder::new_coinbase`]: crate::builder::Builder::new_coinbase
+    Ironwood,
+}
+
+#[cfg(feature = "circuit")]
+impl BundleProtocol {
+    /// Returns the [`OrchardCircuitVersion`] for this pool.
+    ///
+    /// Both pools use [`OrchardCircuitVersion::Ironwood`].
+    ///
+    /// [`OrchardCircuitVersion`]: crate::circuit::OrchardCircuitVersion
+    /// [`OrchardCircuitVersion::Ironwood`]: crate::circuit::OrchardCircuitVersion::Ironwood
+    pub fn circuit_version(self) -> crate::circuit::OrchardCircuitVersion {
+        crate::circuit::OrchardCircuitVersion::Ironwood
+    }
+}
+
+impl BundleProtocol {
+    /// Returns the [`BundleFormat`] for this pool.
+    ///
+    /// All variants use [`BundleFormat::Nu6_3`].
+    pub fn bundle_format(self) -> BundleFormat {
+        BundleFormat::Nu6_3
+    }
+
+    /// Returns the [`Flags`] for this pool.
+    ///
+    /// - [`BundleProtocol::Orchard`][]: [`Flags::CROSS_ADDRESS_DISABLED`]
+    /// - [`BundleProtocol::Ironwood`][]: [`Flags::ENABLED`]
+    pub fn flags(self) -> Flags {
+        match self {
+            BundleProtocol::Orchard => Flags::CROSS_ADDRESS_DISABLED,
+            BundleProtocol::Ironwood => Flags::ENABLED,
+        }
+    }
+
+    /// Returns the default [`NoteVersion`] for notes created in this pool.
+    ///
+    /// - [`BundleProtocol::Orchard`][]: [`NoteVersion::V2`]
+    /// - [`BundleProtocol::Ironwood`][]: [`NoteVersion::V3`]
+    ///
+    /// [`NoteVersion`]: crate::note::NoteVersion
+    /// [`NoteVersion::V2`]: crate::note::NoteVersion::V2
+    /// [`NoteVersion::V3`]: crate::note::NoteVersion::V3
+    pub fn default_note_version(self) -> crate::note::NoteVersion {
+        match self {
+            BundleProtocol::Orchard => crate::note::NoteVersion::V2,
+            BundleProtocol::Ironwood => crate::note::NoteVersion::V3,
+        }
+    }
+}
+
 /// Orchard-specific flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Flags {
@@ -228,6 +318,24 @@ impl Flags {
         } else {
             None
         }
+    }
+
+    /// Serializes flags to a byte for the given [`BundleProtocol`].
+    ///
+    /// Delegates to [`Flags::to_byte`] with the protocol's [`BundleFormat`].
+    /// Returns `None` if this flag set cannot be encoded in the protocol's format
+    /// (e.g. `disableCrossAddress` set for a pre-NU6.3 format, though neither
+    /// current protocol variant uses pre-NU6.3).
+    pub fn to_byte_for_protocol(&self, protocol: BundleProtocol) -> Option<u8> {
+        self.to_byte(protocol.bundle_format())
+    }
+
+    /// Parses flags from a byte for the given [`BundleProtocol`].
+    ///
+    /// Delegates to [`Flags::from_byte`] with the protocol's [`BundleFormat`].
+    /// Returns `None` if unexpected bits are set.
+    pub fn from_byte_for_protocol(value: u8, protocol: BundleProtocol) -> Option<Self> {
+        Self::from_byte(value, protocol.bundle_format())
     }
 }
 
