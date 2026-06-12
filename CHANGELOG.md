@@ -7,6 +7,13 @@ and this project adheres to Rust's notion of
 
 ## [Unreleased]
 
+All changes in this release support the NU6.3 `disableCrossAddress` bundle
+flag, the Ironwood Orchard Action circuit that enforces it, and QR note
+plaintext version support. Existing callers keep the current circuit behavior
+by passing `OrchardCircuitVersion::FixedPostNu6_2` to the APIs that now require
+a circuit version, and the `BundleFormat` of the transaction encoding they
+parse or serialize.
+
 ### Added
 - `orchard::NoteVersion`, which identifies the Orchard note plaintext version
   used to derive a note commitment.
@@ -23,6 +30,37 @@ and this project adheres to Rust's notion of
 - `orchard::pczt::Spend::note_version`, exposed via the existing PCZT spend
   getter pattern, so PCZT verifiers and provers can reconstruct spent note
   commitments with the intended note plaintext version.
+- `orchard::bundle::Flags` APIs for the NU6.3 `disableCrossAddress` flag:
+  - `Flags::CROSS_ADDRESS_DISABLED`
+  - `Flags::cross_address_disabled`
+- `orchard::bundle::BundleFormat`, selecting whether an Orchard bundle flag
+  byte is interpreted under pre-NU6.3 transaction encoding rules (bit 2 is
+  reserved) or NU6.3 rules (bit 2 is `disableCrossAddress`).
+- `orchard::circuit::OrchardCircuitVersion::Ironwood`, the circuit version
+  that enforces the `disableCrossAddress` public input. Ironwood has its own
+  proving and verifying keys.
+- Circuit-version support introspection for the cross-address restriction:
+  - `orchard::circuit::OrchardCircuitVersion::supports_cross_address_restriction`
+  - `orchard::circuit::ProvingKey::supports_cross_address_restriction`
+  - `orchard::circuit::VerifyingKey::circuit_version`
+  - `orchard::circuit::VerifyingKey::supports_cross_address_restriction`
+- Wallet-controlled change outputs, the only way to retain shielded value in
+  a bundle that disables cross-address transfers:
+  - `orchard::builder::Builder::add_change_output`
+  - `orchard::builder::OutputInfo::change`
+- `orchard::pczt::Bundle::verify_cross_address_restriction`, so that Signers
+  can check the `disableCrossAddress` same-receiver structural property before
+  signing. It is a no-op for bundles that permit cross-address transfers.
+- Error variants for the `disableCrossAddress` builder and PCZT checks:
+  - `orchard::builder::BuildError::CrossAddressDisabled`
+  - `orchard::builder::OutputError::{CrossAddressDisabled, FvkMismatch}`
+  - `orchard::pczt::VerifyError::DisallowedCrossAddressTransfer`
+  - `orchard::pczt::ProverError::DisallowedCrossAddressTransfer`
+  - `orchard::pczt::IoFinalizerError::CrossAddressRestriction`
+- `orchard::bundle::testing::arb_flags_nu6_3` (under the `test-dependencies`
+  feature), a strategy that generates flag sets under NU6.3 encoding rules,
+  including `disableCrossAddress`. `arb_flags` is unchanged and only generates
+  flag sets that are representable before NU6.3.
 
 ### Changed
 - `orchard::pczt::Output::parse` now takes an `orchard::NoteVersion` argument.
@@ -31,6 +69,135 @@ and this project adheres to Rust's notion of
 - `orchard::pczt::Spend::parse` now takes an `orchard::NoteVersion` argument.
   This is used by `orchard::pczt::Spend::verify_nullifier` and
   `orchard::pczt::Bundle::create_proof` when reconstructing spent notes.
+- `orchard::bundle::Flags::{from_byte, to_byte}` and
+  `orchard::pczt::Bundle::parse` now take a `BundleFormat`. Under
+  `BundleFormat::Nu6_3`, bit 2 is parsed and serialized as
+  `disableCrossAddress`; under `BundleFormat::PreNu6_3`, bit 2 remains
+  reserved, and `Flags::to_byte` (which now returns `Option<u8>`) returns
+  `None` if `disableCrossAddress` is set.
+- Circuit-building APIs now take the intended `OrchardCircuitVersion`
+  explicitly instead of implicitly selecting `FixedPostNu6_2` — pass
+  `FixedPostNu6_2` for the previous behavior, or `Ironwood` for restricted
+  proofs:
+  - `orchard::circuit::ProvingKey::build`
+  - `orchard::circuit::VerifyingKey::build`
+  - `orchard::circuit::Circuit::from_action_context`
+  - `orchard::builder::Builder::build` (`Builder::new` no longer selects a
+    circuit version)
+  - `orchard::builder::bundle`
+- `orchard::circuit::Instance::from_parts` now takes an
+  `orchard::bundle::Flags` argument instead of separate spend/output enable
+  booleans, so the `disableCrossAddress` flag is carried into the public
+  instances.
+- Proof APIs reject instances that set `disableCrossAddress` unless the key's
+  circuit version supports the cross-address restriction.
+  `orchard::Proof::{create, verify}` and `orchard::Bundle::verify_proof`
+  return `halo2_proofs::plonk::Error::InvalidInstances`; with pre-Ironwood
+  keys, proving a restricted builder-created bundle returns
+  `orchard::builder::BuildError::Proof`, PCZT proving returns
+  `orchard::pczt::ProverError::ProofFailed`, and
+  `orchard::bundle::BatchValidator::validate` returns `false`. Restricted
+  bundles can still be constructed and round-tripped —
+  `orchard::Bundle::<Authorized, V>::try_from_parts` and
+  `orchard::pczt::Bundle::extract` preserve the flag — with enforcement at
+  proving and verification.
+- `orchard::builder::Builder` constructs `disableCrossAddress` bundles as
+  withdrawal/change bundles in which every action's output is addressed to
+  the note it spends:
+  - Requested spends are each paired with a fabricated zero-value output to
+    the spent note's address (which the owning wallet will trial-decrypt when
+    scanning); requested change outputs are each paired with a fabricated
+    zero-value spend at the change address; padding actions pair a dummy
+    spend with a zero-value output to the dummy's address.
+  - `Builder::add_output` returns `OutputError::CrossAddressDisabled` for
+    these bundles; use `Builder::add_change_output` for retained value.
+  - `orchard::builder::BundleType::num_actions` counts
+    `num_spends + num_outputs` requested actions rather than the maximum of
+    the two (a requested spend and a requested output never share an action),
+    and `orchard::builder::BundleMetadata` maps them to distinct actions.
+    Wallets estimating fees (e.g. per ZIP 317) must account for the larger
+    action count.
+- `orchard::pczt::Bundle::create_proof` now builds the Action circuits for
+  the provided `ProvingKey`'s circuit version (previously always
+  `FixedPostNu6_2`), and checks the `disableCrossAddress` same-receiver
+  property before building any circuits, returning
+  `ProverError::DisallowedCrossAddressTransfer` (or
+  `ProverError::MissingRecipient` if a `recipient` field is unset).
+- `orchard::pczt::Bundle::finalize_io` verifies the `disableCrossAddress`
+  restriction before computing `bsk` or signing dummy spends, returning
+  `IoFinalizerError::CrossAddressRestriction` (wrapping the underlying
+  `VerifyError`) and leaving the bundle unmodified if the PCZT is missing
+  recipient data or violates the restriction.
+- `orchard::Bundle::commitment` hashes the raw Orchard flag byte, including
+  the NU6.3 `disableCrossAddress` bit when set. This changes the ZIP-244
+  Orchard digest, and therefore transaction IDs and sighashes, for bundles
+  that set that flag.
+
+### Removed
+- The temporary `_for_version` APIs from `0.14.0`; pass the intended
+  `OrchardCircuitVersion` to the plain APIs listed above instead:
+  - `orchard::circuit::ProvingKey::build_for_version`
+  - `orchard::circuit::VerifyingKey::build_for_version`
+  - `orchard::circuit::Circuit::from_action_context_for_version`
+  - `orchard::builder::Builder::new_for_version` (use `Builder::new` and pass
+    the circuit version to `Builder::build`)
+  - `orchard::builder::bundle_for_version`
+- The `Default` impls for `orchard::circuit::Circuit` and
+  `orchard::circuit::OrchardCircuitVersion`; callers must choose a circuit
+  version explicitly.
+
+### Fixed
+- The `Display` output of `orchard::builder::BuildError::OutputsDisabled`
+  previously described spends rather than outputs.
+
+## [0.14.0] - 2026-06-02
+
+### Added
+- `orchard::action::ActionFromPartsError`
+- `orchard::Proof::expected_proof_size`, the canonical byte length of a proof
+  for a given number of actions.
+- `orchard::bundle::BundleError`
+- `impl From<orchard::action::ActionFromPartsError> for orchard::pczt::TxExtractorError`
+- `impl From<orchard::bundle::BundleError> for orchard::pczt::TxExtractorError`
+- `orchard::bundle::ProofSizeEnforcement`
+- `orchard::Bundle::<Authorized, V>::try_from_parts`, which constructs an
+  authorized bundle while rejecting a proof whose length is not the canonical
+  size for the bundle's number of actions (GHSA-2x4w-pxqw-58v9). This is now the
+  only way to construct a `Bundle<Authorized, _>`, so an authorized bundle can
+  no longer hold a proof padded with arbitrary data when proof size enforcement
+  is strict.
+- `orchard::Bundle::<EffectsOnly, V>::from_parts`
+- `orchard::circuit::OrchardCircuitVersion`, an enum selecting the Action circuit
+  version, with variants `InsecurePreNu6_2` and `FixedPostNu6_2`.
+- `orchard::circuit::ProvingKey::build_for_version` and
+  `orchard::circuit::VerifyingKey::build_for_version`, which build the key for a
+  given `OrchardCircuitVersion`; `build()` continues to build the fixed circuit.
+  `ProvingKey::build_for_version` can build the proving key for the pre-NU6.2
+  (insecure) circuit.
+- `orchard::circuit::ProvingKey::circuit_version`, the version the proving key
+  produces proofs for. `Proof::create` now returns an error if a circuit's
+  version does not match the proving key's.
+- `orchard::circuit::Circuit::from_action_context_for_version`, like
+  `from_action_context` but building the circuit for a chosen
+  `OrchardCircuitVersion`.
+- `orchard::builder::Builder::new_for_version` (requires the `circuit` feature),
+  which constructs a builder that produces proofs for a given
+  `OrchardCircuitVersion` (`Builder::new` uses `FixedPostNu6_2`).
+- `orchard::builder::bundle_for_version` (requires the `circuit` feature), like
+  `bundle` but building the Action circuits for a given `OrchardCircuitVersion`.
+- `orchard::Bundle::<InProgress<Unproven, S>, V>::circuit_version` (requires the
+  `circuit` feature), the `OrchardCircuitVersion` the bundle's actions were built
+  for, so a caller can select a matching `ProvingKey` without tracking it
+  separately.
+
+### Changed
+- Updated to `halo2_gadgets 0.5.0`
+- `orchard::action::Action::from_parts` now returns
+  `Result<Self, orchard::action::ActionFromPartsError>` instead of `Option<Self>`.
+- `orchard::pczt::TxExtractorError` has added variants `InvalidEpk` and
+  `NonCanonicalProofSize`. The Transaction Extractor role now rejects a PCZT
+  whose `zkproof` is not the canonical size for its number of actions
+  (GHSA-2x4w-pxqw-58v9).
 - `unstable-voting-circuits`-only:
   - `orchard::constants::OrchardFixedBases` is now a unit struct rather than a
     3-variant enum. It is a trait carrier for the halo2_gadgets `FixedPoints`
@@ -39,6 +206,9 @@ and this project adheres to Rust's notion of
     `OrchardShortScalarBases`, which are unchanged.
 
 ### Removed
+- `orchard::Bundle::from_parts`. Construct a bundle through the
+  authorization-specific constructor instead: `Bundle::<EffectsOnly, V>::from_parts`,
+  or `Bundle::<Authorized, V>::try_from_parts` for an authorized bundle.
 - `unstable-voting-circuits`-only:
   - The five dead `From<X> for OrchardFixedBases` conversions (from
     `OrchardFixedBasesFull`, `NullifierK`, `ValueCommitV`,
@@ -49,6 +219,17 @@ and this project adheres to Rust's notion of
     enum refactor, dispatch routes through `OrchardBaseFieldBases::NullifierK`
     and `OrchardShortScalarBases::ValueCommitV`, leaving the standalone
     unit-struct impls dead.
+
+### Fixed
+- The update to `halo2_gadgets 0.5.0` fixes a critical vulnerability related to
+  its use in the Orchard circuit. Please see the release notes for
+  `halo2_gadgets 0.5.0` for additional details.
+- An authorized `Bundle` or a PCZT can no longer carry a `zkproof` padded with
+  arbitrary trailing data, and an `Action` can no longer be constructed with an
+  `epk` that does not encode a non-identity Pallas point (GHSA-2x4w-pxqw-58v9).
+  See the `Bundle::<Authorized, V>::try_from_parts`,
+  `Proof::expected_proof_size`, `Action::from_parts`, and `TxExtractorError`
+  entries under `Added` and `Changed` above for the API surface of these checks.
 
 ## [0.13.1] - 2026-04-27
 
