@@ -16,20 +16,22 @@ bundles take a `BundleFormat` selecting the pre-NU6.3 or NU6.3 flag-byte
 encoding.
 
 ### Added
-- `orchard::BundleProtocol`, a single enum that encodes all three correlated
-  protocol choices — circuit version, flag-byte format, and `Flags` — that
-  previously had to be passed separately at construction, build, and
-  serialization time. One variant per pool:
+- `orchard::BundleProtocol`, a single enum that encodes the correlated
+  protocol choices — circuit version, flag-byte format, default note version,
+  and transactional `Flags` — that previously had to be passed separately at
+  construction, build, and serialization time. One variant per pool:
   - `BundleProtocol::Orchard` — Ironwood circuit, NU6.3 format,
-    `disableCrossAddress = 1` (V2 notes). Cross-address transfers are
-    prohibited by consensus in this pool.
+    transactional `disableCrossAddress = 1` (V2 notes). Cross-address
+    transfers in transactional bundles are prohibited by consensus in this pool.
   - `BundleProtocol::Ironwood` — Ironwood circuit, NU6.3 format,
-    `disableCrossAddress = 0` (V3 QR notes). Cross-address transfers are
-    permitted.
+    transactional `disableCrossAddress = 0` (V3 QR notes). Cross-address
+    transfers in transactional bundles are permitted.
 - `orchard::builder::Builder::new_coinbase`, a dedicated constructor for
-  ZIP 213-style shielded coinbase bundles into the Ironwood pool. Coinbase
-  bundles have spends disabled and no MIN_ACTIONS padding. Orchard pool
-  coinbase is prohibited by consensus and has no corresponding constructor.
+  ZIP 213-style shielded coinbase bundles. It takes a [`BundleProtocol`] so
+  callers can construct Orchard or Ironwood coinbase bundles. Downstream
+  consensus policy decides which pool is valid at a given height. Coinbase
+  bundles have spends disabled, `disableCrossAddress` unset, and no MIN_ACTIONS
+  padding.
 - `orchard::builder::Builder::require_bundle`, which forces the builder to
   produce a bundle even when no real spends or outputs have been added
   (producing a bundle of dummy-only actions). Returns

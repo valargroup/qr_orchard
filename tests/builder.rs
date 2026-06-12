@@ -213,6 +213,40 @@ fn builder_builds_for_orchard_protocol() {
     assert!(bundle.verify_proof(&fixed_vk).is_err());
 }
 
+// Orchard pool coinbase: a single output-only action, no padding, spends disabled,
+// disableCrossAddress unset. Downstream consensus policy decides whether this
+// bundle type is accepted at a given height.
+#[test]
+fn orchard_coinbase_builder_constructs_v2_output() {
+    let mut rng = OsRng;
+    let sk = SpendingKey::from_bytes([0; 32]).unwrap();
+    let fvk = FullViewingKey::from(&sk);
+    let recipient = fvk.address_at(0u32, Scope::External);
+
+    let anchor = MerkleHashOrchard::empty_root(32.into()).into();
+    let mut builder = Builder::new_coinbase(BundleProtocol::Orchard, anchor);
+    assert_eq!(
+        builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
+        Ok(())
+    );
+
+    let (unauthorized, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+
+    assert_eq!(unauthorized.actions().len(), 1);
+    assert!(!unauthorized.flags().spends_enabled());
+    assert!(!unauthorized.flags().cross_address_disabled());
+    assert_eq!(
+        unauthorized.circuit_version(),
+        OrchardCircuitVersion::Ironwood
+    );
+
+    let output_action_index = bundle_meta.output_action_index(0).unwrap();
+    let (note, _, _) = unauthorized
+        .decrypt_output_with_key(output_action_index, &fvk.to_ivk(Scope::External))
+        .unwrap();
+    assert_eq!(note.version(), NoteVersion::V2);
+}
+
 // Ironwood pool coinbase: a single output-only action, no padding, spends disabled,
 // disableCrossAddress unset. Verifies under the Ironwood VK; rejected by FixedPostNu6_2.
 #[test]
@@ -227,13 +261,13 @@ fn ironwood_coinbase_proves_and_verifies() {
     let recipient = fvk.address_at(0u32, Scope::External);
 
     let anchor = MerkleHashOrchard::empty_root(32.into()).into();
-    let mut builder = Builder::new_coinbase(anchor);
+    let mut builder = Builder::new_coinbase(BundleProtocol::Ironwood, anchor);
     assert_eq!(
         builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
         Ok(())
     );
 
-    let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+    let (unauthorized, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
 
     assert_eq!(unauthorized.actions().len(), 1);
     assert!(!unauthorized.flags().spends_enabled());
@@ -242,6 +276,11 @@ fn ironwood_coinbase_proves_and_verifies() {
         unauthorized.circuit_version(),
         OrchardCircuitVersion::Ironwood
     );
+    let output_action_index = bundle_meta.output_action_index(0).unwrap();
+    let (note, _, _) = unauthorized
+        .decrypt_output_with_key(output_action_index, &fvk.to_ivk(Scope::External))
+        .unwrap();
+    assert_eq!(note.version(), NoteVersion::V3);
 
     let sighash: [u8; 32] = unauthorized.commitment().into();
     let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();

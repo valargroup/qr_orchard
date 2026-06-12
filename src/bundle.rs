@@ -67,37 +67,48 @@ pub enum BundleFormat {
 
 /// Selects the pool and circuit semantics for an Orchard bundle.
 ///
-/// Encodes the three correlated choices a caller would otherwise have to pass
-/// separately — circuit version, flag-byte format, and cross-address policy —
-/// as a single value.
+/// Encodes the correlated choices a caller would otherwise have to pass
+/// separately — circuit version, flag-byte format, default note version, and
+/// the cross-address policy for transactional bundles — as a single value.
 ///
 /// Both variants use [`OrchardCircuitVersion::Ironwood`] and [`BundleFormat::Nu6_3`].
-/// They differ on [`Flags`] and default note version:
+/// They differ on transactional [`Flags`] and default note version:
 ///
 /// | Pool | `disableCrossAddress` | Note version | Cross-address transfers |
 /// |------|-----------------------|--------------|-------------------------|
 /// | [`Orchard`] | `1` (forced) | V2 | Prohibited by consensus |
 /// | [`Ironwood`] | `0` | V3 (ZIP 2005 QR) | Permitted |
 ///
+/// Coinbase bundles use the protocol for circuit selection and default note
+/// version. Their flags are fixed by [`BundleType::Coinbase`]: spends disabled,
+/// outputs enabled, and `disableCrossAddress` unset.
+///
 /// [`Orchard`]: BundleProtocol::Orchard
 /// [`Ironwood`]: BundleProtocol::Ironwood
+/// [`BundleType::Coinbase`]: crate::builder::BundleType::Coinbase
 /// [`OrchardCircuitVersion::Ironwood`]: crate::circuit::OrchardCircuitVersion::Ironwood
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BundleProtocol {
     /// The Orchard pool at NU6.3+.
     ///
     /// Uses the Ironwood circuit and NU6.3 flag-byte format.
-    /// `disableCrossAddress = 1` is required by consensus — cross-address transfers
-    /// are prohibited. Notes use the V2 (ZIP 212) plaintext format.
+    /// For transactional bundles, `disableCrossAddress = 1` is required by
+    /// consensus — cross-address transfers are prohibited. Notes use the V2
+    /// (ZIP 212) plaintext format.
     ///
-    /// Coinbase bundles are structurally incompatible with this pool because they
-    /// hard-code `disableCrossAddress = 0`; the pool's consensus rules prohibit them.
+    /// For coinbase bundles in this pool, use [`Builder::new_coinbase`] instead of
+    /// [`Builder::new`]. Downstream consensus policy decides whether Orchard
+    /// coinbase bundles are accepted at a given height.
+    ///
+    /// [`Builder::new`]: crate::builder::Builder::new
+    /// [`Builder::new_coinbase`]: crate::builder::Builder::new_coinbase
     Orchard,
     /// The Ironwood pool (QR).
     ///
     /// Uses the Ironwood circuit and NU6.3 flag-byte format.
-    /// `disableCrossAddress = 0` — cross-address transfers are permitted.
-    /// Notes use the V3 (ZIP 2005 quantum-recoverable) plaintext format.
+    /// For transactional bundles, `disableCrossAddress = 0` — cross-address
+    /// transfers are permitted. Notes use the V3 (ZIP 2005 quantum-recoverable)
+    /// plaintext format.
     ///
     /// For coinbase bundles in this pool, use [`Builder::new_coinbase`] instead of
     /// [`Builder::new`].

@@ -693,22 +693,22 @@ impl Builder {
         }
     }
 
-    /// Constructs a new coinbase builder for the Ironwood pool.
+    /// Constructs a new coinbase builder for the given [`BundleProtocol`].
     ///
     /// Coinbase bundles have spends disabled and contain exactly the outputs added —
-    /// no `MIN_ACTIONS` padding is applied. Orchard pool coinbase is prohibited by
-    /// consensus; only the Ironwood pool accepts coinbase bundles.
+    /// no `MIN_ACTIONS` padding is applied. The protocol selects the output note
+    /// version and circuit version; flags are fixed by [`BundleType::Coinbase`].
+    /// Downstream consensus policy decides whether coinbase bundles for that
+    /// protocol are accepted at a given height.
     ///
-    /// Use [`Builder::new`] with [`BundleProtocol::Ironwood`] for transactional bundles.
-    pub fn new_coinbase(anchor: Anchor) -> Self {
+    /// Use [`Builder::new`] with the same protocol for transactional bundles.
+    pub fn new_coinbase(protocol: BundleProtocol, anchor: Anchor) -> Self {
         Builder {
             spends: vec![],
             outputs: vec![],
             bundle_type: BundleType::Coinbase,
             anchor,
-            // Coinbase structure is tracked by `bundle_type`. `protocol` is only used
-            // to derive OrchardCircuitVersion::Ironwood at build time.
-            protocol: BundleProtocol::Ironwood,
+            protocol,
         }
     }
 
@@ -1000,26 +1000,30 @@ impl Builder {
     }
 }
 
-/// Builds a coinbase bundle for the Ironwood pool from pre-computed outputs.
+/// Builds a coinbase bundle for the given [`BundleProtocol`] from pre-computed outputs.
 ///
 /// Coinbase bundles have spends disabled and contain exactly the provided outputs —
-/// no `MIN_ACTIONS` padding is applied. Callers that prefer the builder pattern
-/// should use [`Builder::new_coinbase`] instead.
+/// no `MIN_ACTIONS` padding is applied. The protocol selects the circuit
+/// version and internally generated default note versions; the supplied
+/// pre-computed outputs keep their explicit note versions. Callers that prefer
+/// the builder pattern should use [`Builder::new_coinbase`] instead.
 ///
 /// Returns `None` if `outputs` is empty.
 #[cfg(feature = "circuit")]
 pub fn coinbase_bundle<V: TryFrom<i64>>(
     rng: impl RngCore,
     anchor: Anchor,
+    protocol: BundleProtocol,
     outputs: Vec<OutputInfo>,
 ) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
+    let circuit_version = protocol.circuit_version();
     build_bundle(
         rng,
         anchor,
         BundleType::Coinbase,
         vec![],
         outputs,
-        NoteVersion::V3,
+        protocol.default_note_version(),
         |pre_actions, flags, value_balance, bundle_meta, rng| {
             finish_unauthorized_bundle(
                 pre_actions,
@@ -1028,7 +1032,7 @@ pub fn coinbase_bundle<V: TryFrom<i64>>(
                 bundle_meta,
                 rng,
                 anchor,
-                OrchardCircuitVersion::Ironwood,
+                circuit_version,
             )
         },
     )
@@ -2194,7 +2198,7 @@ mod tests {
         }
 
         // Coinbase builder: require_bundle returns Err.
-        let mut cb = Builder::new_coinbase(empty_anchor);
+        let mut cb = Builder::new_coinbase(BundleProtocol::Ironwood, empty_anchor);
         assert!(matches!(cb.require_bundle(), Err(BundleRequiredError)));
     }
 
@@ -2213,9 +2217,10 @@ mod tests {
             [0u8; 512],
             NoteVersion::V3,
         );
-        let (bundle, _) = coinbase_bundle::<i64>(&mut rng, anchor, vec![output])
-            .unwrap()
-            .unwrap();
+        let (bundle, _) =
+            coinbase_bundle::<i64>(&mut rng, anchor, BundleProtocol::Ironwood, vec![output])
+                .unwrap()
+                .unwrap();
 
         // Exactly one action, no padding, spends disabled, cross-address unset.
         assert_eq!(bundle.actions().len(), 1);
@@ -2235,8 +2240,42 @@ mod tests {
         assert!(authorized.verify_proof(&fixed_vk).is_err());
 
         // Empty outputs produces None.
-        assert!(coinbase_bundle::<i64>(&mut rng, anchor, vec![])
-            .unwrap()
-            .is_none());
+        assert!(
+            coinbase_bundle::<i64>(&mut rng, anchor, BundleProtocol::Ironwood, vec![])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn coinbase_bundle_constructs_orchard_output() {
+        let mut rng = OsRng;
+        let sk = SpendingKey::from_bytes([0; 32]).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let recipient = fvk.address_at(0u32, Scope::External);
+        let anchor = EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into();
+
+        let output = OutputInfo::new(
+            None,
+            recipient,
+            NoteValue::from_raw(5000),
+            [0u8; 512],
+            NoteVersion::V2,
+        );
+        let (bundle, bundle_meta) =
+            coinbase_bundle::<i64>(&mut rng, anchor, BundleProtocol::Orchard, vec![output])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(bundle.actions().len(), 1);
+        assert!(!bundle.flags().spends_enabled());
+        assert!(!bundle.flags().cross_address_disabled());
+        assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
+
+        let output_action_index = bundle_meta.output_action_index(0).unwrap();
+        let (note, _, _) = bundle
+            .decrypt_output_with_key(output_action_index, &fvk.to_ivk(Scope::External))
+            .unwrap();
+        assert_eq!(note.version(), NoteVersion::V2);
     }
 }
