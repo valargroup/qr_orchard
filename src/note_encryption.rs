@@ -74,7 +74,7 @@ where
     let pk_d = get_pk_d(&diversifier);
 
     let recipient = Address::from_parts(diversifier, pk_d);
-    let note = Option::from(Note::from_parts_with_version(
+    let note = Option::from(Note::from_parts(
         recipient,
         value,
         domain.rho,
@@ -375,7 +375,7 @@ pub mod testing {
 
     use crate::{
         keys::OutgoingViewingKey,
-        note::{ExtractedNoteCommitment, Nullifier, RandomSeed, Rho},
+        note::{ExtractedNoteCommitment, NoteVersion, Nullifier, RandomSeed, Rho},
         value::NoteValue,
         Address, Note,
     };
@@ -403,7 +403,7 @@ pub mod testing {
                 }
             }
         };
-        let note = Note::from_parts(recipient, value, rho, rseed).unwrap();
+        let note = Note::from_parts(recipient, value, rho, rseed, NoteVersion::DEFAULT).unwrap();
         let encryptor = OrchardNoteEncryption::new(ovk, note, [0u8; 512]);
         let cmx = ExtractedNoteCommitment::from(note.commitment());
         let ephemeral_key = OrchardDomain::epk_bytes(encryptor.epk());
@@ -436,7 +436,10 @@ mod tests {
             DiversifiedTransmissionKey, Diversifier, EphemeralSecretKey, IncomingViewingKey,
             OutgoingViewingKey, PreparedIncomingViewingKey,
         },
-        note::{ExtractedNoteCommitment, Nullifier, RandomSeed, Rho, TransmittedNoteCiphertext},
+        note::{
+            ExtractedNoteCommitment, NoteVersion, Nullifier, RandomSeed, Rho,
+            TransmittedNoteCiphertext,
+        },
         primitives::redpallas,
         value::{NoteValue, ValueCommitment},
         Address, Note,
@@ -486,7 +489,8 @@ mod tests {
             assert_eq!(ock.as_ref(), tv.ock);
 
             let recipient = Address::from_parts(d, pk_d);
-            let note = Note::from_parts(recipient, value, rho, rseed).unwrap();
+            let note =
+                Note::from_parts(recipient, value, rho, rseed, NoteVersion::DEFAULT).unwrap();
             assert_eq!(ExtractedNoteCommitment::from(note.commitment()), cmx);
 
             let action = Action::from_parts(

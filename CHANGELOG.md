@@ -9,10 +9,11 @@ and this project adheres to Rust's notion of
 
 All changes in this release support the NU6.3 `disableCrossAddress` bundle
 flag, the Ironwood Orchard Action circuit that enforces it, and QR note
-plaintext version support. Existing callers keep the current circuit behavior
-by passing `OrchardCircuitVersion::FixedPostNu6_2` to the APIs that now require
-a circuit version, and the `BundleFormat` of the transaction encoding they
-parse or serialize.
+plaintext version support. Callers targeting the existing Orchard pool pass
+`BundleProtocol::Orchard` to builder APIs; callers targeting the new Ironwood
+QR pool pass `BundleProtocol::Ironwood`. Low-level APIs that parse or serialize
+bundles take a `BundleFormat` selecting the pre-NU6.3 or NU6.3 flag-byte
+encoding.
 
 ### Added
 - `orchard::BundleProtocol`, a single enum that encodes all three correlated
@@ -39,13 +40,13 @@ parse or serialize.
   `Builder::require_bundle` when called on a coinbase builder.
 - `orchard::NoteVersion`, which identifies the Orchard note plaintext version
   used to derive a note commitment.
-- `orchard::NoteVersion::DEFAULT`, the note version produced by constructors
-  that do not take an explicit note version.
+- `orchard::NoteVersion::DEFAULT`, an alias for `NoteVersion::V2`, the note
+  version used in the Orchard pool. Pass this to note constructors that take
+  an explicit `NoteVersion` when constructing Orchard pool notes.
 - Version-aware note and builder APIs:
-  - `orchard::Note::from_parts_with_version`
   - `orchard::Note::version`
-  - `orchard::builder::OutputInfo::new_with_version`
-  - `orchard::builder::Builder::add_output_with_version`
+  - `orchard::builder::Builder::add_output_with_version` — adds an output
+    with an explicit [`NoteVersion`], overriding the protocol default.
 - `orchard::pczt::Output::note_version`, exposed via the existing PCZT output
   getter pattern, so PCZT verifiers and provers can reconstruct output note
   commitments with the intended note plaintext version.
@@ -69,7 +70,9 @@ parse or serialize.
 - Wallet-controlled change outputs, the only way to retain shielded value in
   a bundle that disables cross-address transfers:
   - `orchard::builder::Builder::add_change_output`
-  - `orchard::builder::OutputInfo::change`
+  - `orchard::builder::OutputInfo::change` — now takes an explicit
+    `NoteVersion`; use [`Builder::add_change_output`] to have the version
+    derived automatically from the [`BundleProtocol`].
 - `orchard::pczt::Bundle::verify_cross_address_restriction`, so that Signers
   can check the `disableCrossAddress` same-receiver structural property before
   signing. It is a no-op for bundles that permit cross-address transfers.
@@ -97,6 +100,34 @@ parse or serialize.
   `disableCrossAddress`; under `BundleFormat::PreNu6_3`, bit 2 remains
   reserved, and `Flags::to_byte` (which now returns `Option<u8>`) returns
   `None` if `disableCrossAddress` is set.
+- `orchard::Note::from_parts` now takes an explicit `NoteVersion` parameter
+  instead of hard-coding `NoteVersion::DEFAULT`. Callers that previously
+  relied on the default should pass `NoteVersion::DEFAULT` explicitly.
+- `orchard::Note::new` (internal; exposed under `unstable-voting-circuits`)
+  now takes an explicit `NoteVersion` parameter instead of hard-coding
+  `NoteVersion::DEFAULT`.
+- `orchard::Note::dummy` (internal; exposed under `unstable-voting-circuits`)
+  now takes an explicit `NoteVersion` parameter so that dummy notes match the
+  pool's note version.
+- Dummy notes produced during bundle padding and fabricated same-receiver
+  actions in `disableCrossAddress` bundles now use the pool's note version
+  (derived from the [`BundleProtocol`]) rather than hard-coding
+  `NoteVersion::DEFAULT`. This ensures circuit consistency: all notes in an
+  Ironwood pool bundle carry V3 commitments, and all notes in an Orchard pool
+  bundle carry V2 commitments.
+- `orchard::builder::OutputInfo::new` now takes an explicit `NoteVersion`
+  parameter instead of hard-coding `NoteVersion::DEFAULT`. Callers that
+  previously relied on the default should pass `NoteVersion::DEFAULT`
+  explicitly, or use [`Builder::add_output`] / [`Builder::add_change_output`]
+  which derive the version from the [`BundleProtocol`] automatically.
+- `orchard::builder::Builder::add_output` and
+  `orchard::builder::Builder::add_change_output` now produce notes at the
+  note version determined by the [`BundleProtocol`] passed to [`Builder::new`]
+  or [`Builder::new_coinbase`] — [`NoteVersion::V2`] for
+  [`BundleProtocol::Orchard`] and [`NoteVersion::V3`] for
+  [`BundleProtocol::Ironwood`]. Previously both methods hard-coded
+  `NoteVersion::DEFAULT` (`V2`) regardless of pool. Use
+  [`Builder::add_output_with_version`] to override explicitly.
 - `orchard::builder::Builder::new` now takes `orchard::BundleProtocol`
   instead of `orchard::builder::BundleType`. The circuit version, flag-byte
   format, and flags are derived from the protocol; `BundleType` remains an
@@ -164,6 +195,13 @@ parse or serialize.
   that set that flag.
 
 ### Removed
+- `orchard::Note::from_parts_with_version`; `Note::from_parts` now takes an
+  explicit `NoteVersion` parameter directly.
+- `orchard::Note::new_with_version` (internal; exposed under
+  `unstable-voting-circuits`); `Note::new` now takes an explicit `NoteVersion`
+  parameter directly.
+- `orchard::builder::OutputInfo::new_with_version`; `OutputInfo::new` now
+  takes an explicit `NoteVersion` parameter directly.
 - `orchard::builder::BundleType` as a caller-facing type. It remains internal
   to the builder but is no longer part of the public API surface. Pass
   `orchard::BundleProtocol` to `Builder::new` and `builder::bundle` instead.

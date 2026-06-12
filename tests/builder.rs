@@ -6,7 +6,7 @@ use orchard::{
     bundle::{Authorized, BatchValidator},
     circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
     keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
-    note::ExtractedNoteCommitment,
+    note::{ExtractedNoteCommitment, NoteVersion},
     note_encryption::OrchardDomain,
     tree::{MerkleHashOrchard, MerklePath},
     value::NoteValue,
@@ -157,6 +157,60 @@ fn builder_builds_for_ironwood_circuit_version() {
     let bundle = proven.apply_signatures(rng, sighash, &[]).unwrap();
 
     verify_bundle(&bundle, &ironwood_vk);
+}
+
+#[test]
+fn builder_builds_for_orchard_protocol() {
+    let mut rng = OsRng;
+    let ironwood_pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
+    let ironwood_vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
+    let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+
+    let sk = SpendingKey::from_bytes([0; 32]).unwrap();
+    let fvk = FullViewingKey::from(&sk);
+    let recipient = fvk.address_at(0u32, Scope::Internal);
+
+    let anchor = MerkleHashOrchard::empty_root(32.into()).into();
+    let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+    assert_eq!(
+        builder.add_change_output(
+            fvk.clone(),
+            Some(fvk.to_ovk(Scope::Internal)),
+            recipient,
+            NoteValue::from_raw(5000),
+            [0u8; 512],
+        ),
+        Ok(())
+    );
+
+    let (unauthorized, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+    assert_eq!(
+        unauthorized.circuit_version(),
+        OrchardCircuitVersion::Ironwood
+    );
+    assert!(unauthorized.flags().spends_enabled());
+    assert!(unauthorized.flags().outputs_enabled());
+    assert!(unauthorized.flags().cross_address_disabled());
+    assert_eq!(
+        unauthorized
+            .decrypt_output_with_key(
+                bundle_meta
+                    .output_action_index(0)
+                    .expect("Output 0 can be found"),
+                &fvk.to_ivk(Scope::Internal),
+            )
+            .map(|(note, _, _)| (note.value(), note.version())),
+        Some((NoteValue::from_raw(5000), NoteVersion::V2))
+    );
+
+    let sighash: [u8; 32] = unauthorized.commitment().into();
+    let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
+    let bundle = proven
+        .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
+        .unwrap();
+
+    verify_bundle(&bundle, &ironwood_vk);
+    assert!(bundle.verify_proof(&fixed_vk).is_err());
 }
 
 // Ironwood pool coinbase: a single output-only action, no padding, spends disabled,

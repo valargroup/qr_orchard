@@ -270,8 +270,6 @@ impl Note {
     ///
     /// Returns `None` if a valid [`NoteCommitment`] cannot be derived from the note.
     ///
-    /// This uses [`NoteVersion::DEFAULT`].
-    ///
     /// # Caveats
     ///
     /// This low-level constructor enforces that the provided arguments produce an
@@ -283,18 +281,6 @@ impl Note {
     ///
     /// [Section 4.19]: https://zips.z.cash/protocol/protocol.pdf#saplingandorchardinband
     pub fn from_parts(
-        recipient: Address,
-        value: NoteValue,
-        rho: Rho,
-        rseed: RandomSeed,
-    ) -> CtOption<Self> {
-        Self::from_parts_with_version(recipient, value, rho, rseed, NoteVersion::DEFAULT)
-    }
-
-    /// Creates a `Note` from its component parts with a specific version.
-    ///
-    /// Returns `None` if a valid [`NoteCommitment`] cannot be derived from the note.
-    pub fn from_parts_with_version(
         recipient: Address,
         value: NoteValue,
         rho: Rho,
@@ -313,8 +299,6 @@ impl Note {
 
     /// Generates a new note.
     ///
-    /// This uses [`NoteVersion::DEFAULT`].
-    ///
     /// Defined in [Zcash Protocol Spec § 4.7.3: Sending Notes (Orchard)][orchardsend].
     ///
     /// [orchardsend]: https://zips.z.cash/protocol/nu5.pdf#orchardsend
@@ -324,20 +308,10 @@ impl Note {
         value: NoteValue,
         rho: Rho,
         mut rng: impl RngCore,
-    ) -> Self {
-        Self::new_with_version(recipient, value, rho, &mut rng, NoteVersion::DEFAULT)
-    }
-
-    /// Generates a new note with a specified [`NoteVersion`].
-    pub(crate) fn new_with_version(
-        recipient: Address,
-        value: NoteValue,
-        rho: Rho,
-        mut rng: impl RngCore,
         version: NoteVersion,
     ) -> Self {
         loop {
-            let note = Note::from_parts_with_version(
+            let note = Note::from_parts(
                 recipient,
                 value,
                 rho,
@@ -354,25 +328,23 @@ impl Note {
     ///
     /// Defined in [Zcash Protocol Spec § 4.8.3: Dummy Notes (Orchard)][orcharddummynotes].
     ///
-    /// Per [ZIP 2005], dummy notes use [`NoteVersion::DEFAULT`].
-    ///
     /// [orcharddummynotes]: https://zips.z.cash/protocol/nu5.pdf#orcharddummynotes
-    /// [ZIP 2005]: https://zips.z.cash/zip-2005
     #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
     pub(crate) fn dummy(
         rng: &mut impl RngCore,
         rho: Option<Rho>,
+        note_version: NoteVersion,
     ) -> (SpendingKey, FullViewingKey, Self) {
         let sk = SpendingKey::random(rng);
         let fvk: FullViewingKey = (&sk).into();
         let recipient = fvk.address_at(0u32, Scope::External);
 
-        let note = Note::new_with_version(
+        let note = Note::new(
             recipient,
             NoteValue::ZERO,
             rho.unwrap_or_else(|| Rho::from_nf_old(Nullifier::dummy(rng))),
             rng,
-            NoteVersion::DEFAULT,
+            note_version,
         );
 
         (sk, fvk, note)

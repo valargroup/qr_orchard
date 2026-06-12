@@ -329,8 +329,8 @@ impl SpendInfo {
     /// Defined in [Zcash Protocol Spec § 4.8.3: Dummy Notes (Orchard)][orcharddummynotes].
     ///
     /// [orcharddummynotes]: https://zips.z.cash/protocol/nu5.pdf#orcharddummynotes
-    fn dummy(rng: &mut impl RngCore) -> Self {
-        let (sk, fvk, note) = Note::dummy(rng, None);
+    fn dummy(rng: &mut impl RngCore, note_version: NoteVersion) -> Self {
+        let (sk, fvk, note) = Note::dummy(rng, None, note_version);
         let merkle_path = MerklePath::dummy(rng);
 
         SpendInfo {
@@ -415,26 +415,7 @@ pub struct OutputInfo {
 
 impl OutputInfo {
     /// Constructs a new OutputInfo from its constituent parts.
-    ///
-    /// This uses [`NoteVersion::DEFAULT`].
     pub fn new(
-        ovk: Option<OutgoingViewingKey>,
-        recipient: Address,
-        value: NoteValue,
-        memo: [u8; 512],
-    ) -> Self {
-        Self {
-            ovk,
-            recipient,
-            value,
-            memo,
-            note_version: NoteVersion::DEFAULT,
-            change_fvk: None,
-        }
-    }
-
-    /// Constructs a new OutputInfo with a specified [`NoteVersion`].
-    pub fn new_with_version(
         ovk: Option<OutgoingViewingKey>,
         recipient: Address,
         value: NoteValue,
@@ -451,7 +432,7 @@ impl OutputInfo {
         }
     }
 
-    /// Constructs a wallet-controlled change output.
+    /// Constructs a wallet-controlled change output with the given [`NoteVersion`].
     ///
     /// In a bundle that disables cross-address transfers, the builder pairs this output
     /// with a fabricated zero-value spend controlled by `fvk` at `recipient`, in the
@@ -465,6 +446,7 @@ impl OutputInfo {
         recipient: Address,
         value: NoteValue,
         memo: [u8; 512],
+        note_version: NoteVersion,
     ) -> Option<Self> {
         let scope = fvk.scope_for_address(&recipient)?;
         Some(Self {
@@ -472,7 +454,7 @@ impl OutputInfo {
             recipient,
             value,
             memo,
-            note_version: NoteVersion::DEFAULT,
+            note_version,
             change_fvk: Some((fvk, scope)),
         })
     }
@@ -480,11 +462,11 @@ impl OutputInfo {
     /// Defined in [Zcash Protocol Spec § 4.8.3: Dummy Notes (Orchard)][orcharddummynotes].
     ///
     /// [orcharddummynotes]: https://zips.z.cash/protocol/nu5.pdf#orcharddummynotes
-    pub fn dummy(rng: &mut impl RngCore) -> Self {
+    pub fn dummy(rng: &mut impl RngCore, note_version: NoteVersion) -> Self {
         let fvk: FullViewingKey = (&SpendingKey::random(rng)).into();
         let recipient = fvk.address_at(0u32, Scope::External);
 
-        Self::new(None, recipient, NoteValue::ZERO, [0u8; 512])
+        Self::new(None, recipient, NoteValue::ZERO, [0u8; 512], note_version)
     }
 
     /// Builds the output half of an action.
@@ -499,8 +481,7 @@ impl OutputInfo {
         mut rng: impl RngCore,
     ) -> (Note, ExtractedNoteCommitment, TransmittedNoteCiphertext) {
         let rho = Rho::from_nf_old(nf_old);
-        let note =
-            Note::new_with_version(self.recipient, self.value, rho, &mut rng, self.note_version);
+        let note = Note::new(self.recipient, self.value, rho, &mut rng, self.note_version);
         let cm_new = note.commitment();
         let cmx = cm_new.into();
 
@@ -774,7 +755,14 @@ impl Builder {
 
     /// Adds an address which will receive funds in this transaction.
     ///
-    /// This uses [`NoteVersion::DEFAULT`].
+    /// Adds an address which will receive funds in this transaction.
+    ///
+    /// Uses the note version determined by the [`BundleProtocol`] passed to
+    /// [`Builder::new`] or [`Builder::new_coinbase`] — [`NoteVersion::V2`] for
+    /// [`BundleProtocol::Orchard`] and [`NoteVersion::V3`] for
+    /// [`BundleProtocol::Ironwood`]. Use [`Builder::add_output_with_version`] to
+    /// override the note version explicitly.
+    ///
     /// In a bundle that disables cross-address transfers, ordinary outputs cannot be
     /// constructed (each action's output is addressed to the note it spends); retained
     /// value must be added with [`Builder::add_change_output`] instead.
@@ -785,11 +773,21 @@ impl Builder {
         value: NoteValue,
         memo: [u8; 512],
     ) -> Result<(), OutputError> {
-        self.add_output_with_version(ovk, recipient, value, memo, NoteVersion::DEFAULT)
+        self.add_output_with_version(
+            ovk,
+            recipient,
+            value,
+            memo,
+            self.protocol.default_note_version(),
+        )
     }
 
     /// Adds an address which will receive funds in this transaction,
     /// using the specified [`NoteVersion`].
+    ///
+    /// In a bundle that disables cross-address transfers, ordinary outputs cannot be
+    /// constructed (each action's output is addressed to the note it spends); retained
+    /// value must be added with [`Builder::add_change_output`] instead.
     pub fn add_output_with_version(
         &mut self,
         ovk: Option<OutgoingViewingKey>,
@@ -806,13 +804,8 @@ impl Builder {
             return Err(OutputError::CrossAddressDisabled);
         }
 
-        self.outputs.push(OutputInfo::new_with_version(
-            ovk,
-            recipient,
-            value,
-            memo,
-            note_version,
-        ));
+        self.outputs
+            .push(OutputInfo::new(ovk, recipient, value, memo, note_version));
 
         Ok(())
     }
@@ -852,8 +845,15 @@ impl Builder {
             return Err(OutputError::OutputsDisabled);
         }
 
-        let output =
-            OutputInfo::change(fvk, ovk, recipient, value, memo).ok_or(OutputError::FvkMismatch)?;
+        let output = OutputInfo::change(
+            fvk,
+            ovk,
+            recipient,
+            value,
+            memo,
+            self.protocol.default_note_version(),
+        )
+        .ok_or(OutputError::FvkMismatch)?;
         self.outputs.push(output);
 
         Ok(())
@@ -935,6 +935,7 @@ impl Builder {
         let spends = self.spends;
         let outputs = self.outputs;
         let circuit_version = self.protocol.circuit_version();
+        let note_version = self.protocol.default_note_version();
 
         build_bundle(
             rng,
@@ -942,6 +943,7 @@ impl Builder {
             bundle_type,
             spends,
             outputs,
+            note_version,
             |pre_actions, flags, value_balance, bundle_meta, rng| {
                 finish_unauthorized_bundle(
                     pre_actions,
@@ -966,6 +968,7 @@ impl Builder {
         let bundle_type = self.bundle_type;
         let spends = self.spends;
         let outputs = self.outputs;
+        let note_version = self.protocol.default_note_version();
 
         build_bundle(
             rng,
@@ -973,6 +976,7 @@ impl Builder {
             bundle_type,
             spends,
             outputs,
+            note_version,
             |pre_actions, flags, value_sum, bundle_meta, mut rng| {
                 // Create the actions.
                 let actions = pre_actions
@@ -1015,6 +1019,7 @@ pub fn coinbase_bundle<V: TryFrom<i64>>(
         BundleType::Coinbase,
         vec![],
         outputs,
+        NoteVersion::V3,
         |pre_actions, flags, value_balance, bundle_meta, rng| {
             finish_unauthorized_bundle(
                 pre_actions,
@@ -1040,6 +1045,7 @@ pub fn bundle<V: TryFrom<i64>>(
     outputs: Vec<OutputInfo>,
 ) -> Result<Option<(UnauthorizedBundle<V>, BundleMetadata)>, BuildError> {
     let circuit_version = protocol.circuit_version();
+    let note_version = protocol.default_note_version();
     let bundle_type = BundleType::Transactional {
         flags: protocol.flags(),
         bundle_required: false,
@@ -1050,6 +1056,7 @@ pub fn bundle<V: TryFrom<i64>>(
         bundle_type,
         spends,
         outputs,
+        note_version,
         |pre_actions, flags, value_balance, bundle_meta, rng| {
             finish_unauthorized_bundle(
                 pre_actions,
@@ -1125,6 +1132,7 @@ fn build_bundle<B, R: RngCore>(
     bundle_type: BundleType,
     spends: Vec<SpendInfo>,
     outputs: Vec<OutputInfo>,
+    note_version: NoteVersion,
     finisher: impl FnOnce(Vec<ActionInfo>, Flags, ValueSum, BundleMetadata, R) -> Result<B, BuildError>,
 ) -> Result<B, BuildError> {
     let flags = bundle_type.flags();
@@ -1166,7 +1174,13 @@ fn build_bundle<B, R: RngCore>(
         let mut pairs = Vec::with_capacity(num_actions);
 
         for (spend_idx, spend) in spends.into_iter().enumerate() {
-            let output = OutputInfo::new(None, spend.note.recipient(), NoteValue::ZERO, [0u8; 512]);
+            let output = OutputInfo::new(
+                None,
+                spend.note.recipient(),
+                NoteValue::ZERO,
+                [0u8; 512],
+                note_version,
+            );
             pairs.push((Some(spend_idx), None, spend, output));
         }
 
@@ -1176,7 +1190,13 @@ fn build_bundle<B, R: RngCore>(
                 .take()
                 .ok_or(BuildError::CrossAddressDisabled)?;
             let rho = Rho::from_nf_old(Nullifier::dummy(&mut rng));
-            let note = Note::new(output.recipient, NoteValue::ZERO, rho, &mut rng);
+            let note = Note::new(
+                output.recipient,
+                NoteValue::ZERO,
+                rho,
+                &mut rng,
+                note_version,
+            );
             let spend = SpendInfo {
                 // The wallet controls this spend: it is signed through the normal
                 // signing flow, by the spend authorizing key matching `fvk`.
@@ -1190,8 +1210,14 @@ fn build_bundle<B, R: RngCore>(
         }
 
         while pairs.len() < num_actions {
-            let spend = SpendInfo::dummy(&mut rng);
-            let output = OutputInfo::new(None, spend.note.recipient(), NoteValue::ZERO, [0u8; 512]);
+            let spend = SpendInfo::dummy(&mut rng, note_version);
+            let output = OutputInfo::new(
+                None,
+                spend.note.recipient(),
+                NoteValue::ZERO,
+                [0u8; 512],
+                note_version,
+            );
             pairs.push((None, None, spend, output));
         }
 
@@ -1230,14 +1256,18 @@ fn build_bundle<B, R: RngCore>(
         // Pair up the spends and outputs, extending with dummy values as necessary.
         let mut indexed_spends = spends
             .into_iter()
-            .chain(iter::repeat_with(|| SpendInfo::dummy(&mut rng)))
+            .chain(iter::repeat_with(|| {
+                SpendInfo::dummy(&mut rng, note_version)
+            }))
             .enumerate()
             .take(num_actions)
             .collect::<Vec<_>>();
 
         let mut indexed_outputs = outputs
             .into_iter()
-            .chain(iter::repeat_with(|| OutputInfo::dummy(&mut rng)))
+            .chain(iter::repeat_with(|| {
+                OutputInfo::dummy(&mut rng, note_version)
+            }))
             .enumerate()
             .take(num_actions)
             .collect::<Vec<_>>();
@@ -1734,7 +1764,7 @@ mod tests {
         circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
         constants::MERKLE_DEPTH_ORCHARD,
         keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
-        note::{Nullifier, Rho},
+        note::{NoteVersion, Nullifier, Rho},
         pczt::{ProverError, VerifyError},
         tree::{MerklePath, EMPTY_ROOTS},
         value::NoteValue,
@@ -1747,7 +1777,7 @@ mod tests {
         value: NoteValue,
     ) -> (Note, MerklePath, Anchor) {
         let rho = Rho::from_nf_old(Nullifier::dummy(rng));
-        let note = Note::new(recipient, value, rho, &mut *rng);
+        let note = Note::new(recipient, value, rho, &mut *rng, NoteVersion::DEFAULT);
         let merkle_path = MerklePath::dummy(rng);
         let anchor = merkle_path.root(note.commitment().into());
 
@@ -1858,17 +1888,21 @@ mod tests {
             "the real spend remains at the spent note's address"
         );
         assert_eq!(spend_action.spend.value, Some(NoteValue::from_raw(15_000)));
+        assert_eq!(spend_action.spend.note_version, NoteVersion::V2);
         assert!(spend_action.spend.dummy_sk.is_none());
         assert_eq!(spend_action.output.recipient, Some(spend_recipient));
         assert_eq!(spend_action.output.value, Some(NoteValue::ZERO));
+        assert_eq!(spend_action.output.note_version, NoteVersion::V2);
 
         let change_action = &pczt_bundle.actions()[change_action_index];
         assert_eq!(change_action.spend.recipient, Some(change_recipient));
         assert_eq!(change_action.spend.value, Some(NoteValue::ZERO));
+        assert_eq!(change_action.spend.note_version, NoteVersion::V2);
         assert!(change_action.spend.dummy_sk.is_none());
         assert_eq!(change_action.spend.fvk.as_ref(), Some(&change_fvk));
         assert_eq!(change_action.output.recipient, Some(change_recipient));
         assert_eq!(change_action.output.value, Some(NoteValue::from_raw(5_000)));
+        assert_eq!(change_action.output.note_version, NoteVersion::V2);
 
         for action in pczt_bundle.actions() {
             assert!(action
@@ -1908,7 +1942,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(padding_action.spend.value, Some(NoteValue::ZERO));
+        assert_eq!(padding_action.spend.note_version, NoteVersion::V2);
         assert_eq!(padding_action.output.value, Some(NoteValue::ZERO));
+        assert_eq!(padding_action.output.note_version, NoteVersion::V2);
         assert!(padding_action
             .spend
             .recipient
@@ -1935,14 +1971,21 @@ mod tests {
                     recipient,
                     NoteValue::from_raw(5_000),
                     [0u8; 512],
+                    NoteVersion::DEFAULT,
                 )],
             ),
             Err(BuildError::CrossAddressDisabled)
         ));
 
-        let change_output =
-            OutputInfo::change(fvk, None, recipient, NoteValue::from_raw(5_000), [0u8; 512])
-                .unwrap();
+        let change_output = OutputInfo::change(
+            fvk,
+            None,
+            recipient,
+            NoteValue::from_raw(5_000),
+            [0u8; 512],
+            NoteVersion::DEFAULT,
+        )
+        .unwrap();
         let (bundle, bundle_meta) = bundle::<i64>(
             &mut rng,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
@@ -2129,12 +2172,25 @@ mod tests {
 
         // Transactional: empty builder normally returns None; require_bundle forces Some.
         for protocol in [BundleProtocol::Orchard, BundleProtocol::Ironwood] {
+            let expected_note_version = protocol.default_note_version();
+
             let mut builder = Builder::new(protocol, empty_anchor);
             builder
                 .require_bundle()
                 .expect("require_bundle should succeed for transactional");
             let (bundle, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
             assert_eq!(bundle.actions().len(), MIN_ACTIONS);
+
+            let mut builder = Builder::new(protocol, empty_anchor);
+            builder
+                .require_bundle()
+                .expect("require_bundle should succeed for transactional");
+            let (pczt_bundle, _) = builder.build_for_pczt(&mut rng).unwrap();
+            assert_eq!(pczt_bundle.actions().len(), MIN_ACTIONS);
+            for action in pczt_bundle.actions() {
+                assert_eq!(action.spend.note_version, expected_note_version);
+                assert_eq!(action.output.note_version, expected_note_version);
+            }
         }
 
         // Coinbase builder: require_bundle returns Err.
@@ -2150,7 +2206,13 @@ mod tests {
         let recipient = fvk.address_at(0u32, Scope::External);
         let anchor = EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into();
 
-        let output = OutputInfo::new(None, recipient, NoteValue::from_raw(5000), [0u8; 512]);
+        let output = OutputInfo::new(
+            None,
+            recipient,
+            NoteValue::from_raw(5000),
+            [0u8; 512],
+            NoteVersion::V3,
+        );
         let (bundle, _) = coinbase_bundle::<i64>(&mut rng, anchor, vec![output])
             .unwrap()
             .unwrap();

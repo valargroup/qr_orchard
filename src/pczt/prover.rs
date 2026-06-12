@@ -58,7 +58,7 @@ impl super::Bundle {
                     .clone()
                     .ok_or(ProverError::MissingFullViewingKey)?;
 
-                let note = Note::from_parts_with_version(
+                let note = Note::from_parts(
                     action
                         .spend
                         .recipient
@@ -80,7 +80,7 @@ impl super::Bundle {
                 let spend =
                     SpendInfo::new(fvk, note, merkle_path).ok_or(ProverError::WrongFvkForNote)?;
 
-                let output_note = Note::from_parts_with_version(
+                let output_note = Note::from_parts(
                     action
                         .output
                         .recipient

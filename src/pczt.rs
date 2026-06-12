@@ -393,7 +393,13 @@ mod tests {
         let change_recipient = change_fvk.address_at(0u32, Scope::Internal);
 
         let rho = Rho::from_nf_old(Nullifier::dummy(&mut *rng));
-        let note = Note::new(spend_recipient, NoteValue::from_raw(15_000), rho, &mut *rng);
+        let note = Note::new(
+            spend_recipient,
+            NoteValue::from_raw(15_000),
+            rho,
+            &mut *rng,
+            NoteVersion::DEFAULT,
+        );
         let merkle_path = MerklePath::dummy(&mut *rng);
         let anchor = merkle_path.root(note.commitment().into());
 
@@ -574,7 +580,7 @@ mod tests {
         let note = {
             let rho = Rho::from_bytes(&pallas::Base::random(&mut rng).to_repr()).unwrap();
             loop {
-                if let Some(note) = Note::from_parts_with_version(
+                if let Some(note) = Note::from_parts(
                     recipient,
                     value,
                     rho,
@@ -664,9 +670,14 @@ mod tests {
         let note = {
             let rho = Rho::from_bytes(&pallas::Base::random(&mut rng).to_repr()).unwrap();
             loop {
-                if let Some(note) =
-                    Note::from_parts(recipient, value, rho, RandomSeed::random(&mut rng, &rho))
-                        .into_option()
+                if let Some(note) = Note::from_parts(
+                    recipient,
+                    value,
+                    rho,
+                    RandomSeed::random(&mut rng, &rho),
+                    NoteVersion::DEFAULT,
+                )
+                .into_option()
                 {
                     break note;
                 }
@@ -949,7 +960,13 @@ mod tests {
         let spend_recipient = spend_fvk.address_at(0u32, Scope::External);
 
         let rho = Rho::from_nf_old(Nullifier::dummy(&mut rng));
-        let note = Note::new(spend_recipient, NoteValue::from_raw(15_000), rho, &mut rng);
+        let note = Note::new(
+            spend_recipient,
+            NoteValue::from_raw(15_000),
+            rho,
+            &mut rng,
+            NoteVersion::DEFAULT,
+        );
         let merkle_path = MerklePath::dummy(&mut rng);
         let anchor = merkle_path.root(note.commitment().into());
 

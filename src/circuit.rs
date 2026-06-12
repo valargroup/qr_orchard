@@ -1346,7 +1346,7 @@ mod tests {
     use crate::{
         bundle::{BundleFormat, Flags},
         keys::SpendValidatingKey,
-        note::{Note, Rho},
+        note::{Note, NoteVersion, Rho},
         tree::MerklePath,
         value::{ValueCommitTrapdoor, ValueCommitment},
     };
@@ -1374,7 +1374,7 @@ mod tests {
         circuit_version: OrchardCircuitVersion,
         output_matches_spend: bool,
     ) -> (Circuit, Instance) {
-        let (_, fvk, spent_note) = Note::dummy(&mut rng, None);
+        let (_, fvk, spent_note) = Note::dummy(&mut rng, None, NoteVersion::DEFAULT);
 
         let sender_address = spent_note.recipient();
         let nk = *fvk.nk();
@@ -1386,10 +1386,16 @@ mod tests {
         let rk = ak.randomize(&alpha);
 
         let output_note = if output_matches_spend {
-            Note::new(sender_address, spent_note.value(), rho, &mut rng)
+            Note::new(
+                sender_address,
+                spent_note.value(),
+                rho,
+                &mut rng,
+                NoteVersion::DEFAULT,
+            )
         } else {
             loop {
-                let (_, _, output_note) = Note::dummy(&mut rng, Some(rho));
+                let (_, _, output_note) = Note::dummy(&mut rng, Some(rho), NoteVersion::DEFAULT);
                 if !sender_address.same_receiver(&output_note.recipient()) {
                     break output_note;
                 }
