@@ -31,6 +31,37 @@ use crate::{
     Proof,
 };
 
+/// An error that can occur when computing the number of actions a bundle will contain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BundleActionCountError {
+    /// The requested spend and output counts overflowed.
+    InputCountOverflow,
+    /// Spends are disabled for this bundle.
+    SpendsDisabled,
+    /// Outputs are disabled for this bundle.
+    OutputsDisabled,
+}
+
+impl fmt::Display for BundleActionCountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BundleActionCountError::InputCountOverflow => {
+                f.write_str("Requested spend and output counts overflowed.")
+            }
+            BundleActionCountError::SpendsDisabled => {
+                f.write_str("Spends are disabled for this bundle.")
+            }
+            BundleActionCountError::OutputsDisabled => {
+                f.write_str("Outputs are disabled for this bundle.")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for BundleActionCountError {}
+
 #[cfg(feature = "circuit")]
 use crate::circuit::{Instance, VerifyingKey};
 
@@ -163,6 +194,47 @@ impl BundleProtocol {
             BundleProtocol::Orchard => crate::note::NoteVersion::V2,
             BundleProtocol::Ironwood => crate::note::NoteVersion::V3,
         }
+    }
+
+    /// Returns the number of actions that [`Builder::new`] will produce for a
+    /// transactional bundle with the specified numbers of spends and outputs.
+    ///
+    /// Transactional bundles are padded to contain at least 2 actions when any
+    /// genuine spends or outputs are present. Empty transactional bundles contain
+    /// zero actions unless the builder is explicitly required to produce a dummy-only
+    /// bundle.
+    ///
+    /// For [`BundleProtocol::Orchard`], cross-address transfers are disabled, so a
+    /// requested spend and a requested output cannot share an action. The requested
+    /// action count is therefore `num_spends + num_outputs`.
+    ///
+    /// For [`BundleProtocol::Ironwood`], cross-address transfers are enabled, so
+    /// requested spends and outputs can share actions. The requested action count is
+    /// therefore `max(num_spends, num_outputs)`.
+    ///
+    /// [`Builder::new`]: crate::builder::Builder::new
+    pub fn transactional_action_count(
+        self,
+        num_spends: usize,
+        num_outputs: usize,
+    ) -> Result<usize, BundleActionCountError> {
+        crate::builder::BundleType::Transactional {
+            flags: self.flags(),
+            bundle_required: false,
+        }
+        .num_actions(num_spends, num_outputs)
+    }
+
+    /// Returns the number of actions that [`Builder::new_coinbase`] will produce
+    /// after adding `num_outputs` outputs.
+    ///
+    /// Coinbase bundles disable spends and contain exactly the outputs added. They
+    /// are not padded to the transactional minimum action count.
+    ///
+    /// [`Builder::new_coinbase`]: crate::builder::Builder::new_coinbase
+    pub fn coinbase_action_count(self, num_outputs: usize) -> usize {
+        let _ = self;
+        num_outputs
     }
 }
 
@@ -1015,7 +1087,10 @@ pub(crate) mod tests {
     use proptest::prelude::*;
 
     use super::testing::{arb_bundle, arb_flags_nu6_3};
-    use super::{Authorized, Bundle, BundleError, BundleFormat, Flags};
+    use super::{
+        Authorized, Bundle, BundleActionCountError, BundleError, BundleFormat, BundleProtocol,
+        Flags,
+    };
     use crate::Proof;
 
     #[cfg(feature = "circuit")]
@@ -1045,6 +1120,64 @@ pub(crate) mod tests {
             .new_tree(&mut runner)
             .expect("strategy can generate a bundle")
             .current()
+    }
+
+    #[test]
+    fn transactional_action_count_matches_protocol_rules() {
+        assert_eq!(
+            BundleProtocol::Orchard.transactional_action_count(0, 0),
+            Ok(0)
+        );
+        assert_eq!(
+            BundleProtocol::Orchard.transactional_action_count(1, 0),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::Orchard.transactional_action_count(0, 1),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::Orchard.transactional_action_count(1, 1),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::Orchard.transactional_action_count(2, 1),
+            Ok(3)
+        );
+        assert_eq!(
+            BundleProtocol::Orchard.transactional_action_count(usize::MAX, 1),
+            Err(BundleActionCountError::InputCountOverflow)
+        );
+
+        assert_eq!(
+            BundleProtocol::Ironwood.transactional_action_count(0, 0),
+            Ok(0)
+        );
+        assert_eq!(
+            BundleProtocol::Ironwood.transactional_action_count(1, 0),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::Ironwood.transactional_action_count(0, 1),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::Ironwood.transactional_action_count(1, 1),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::Ironwood.transactional_action_count(3, 2),
+            Ok(3)
+        );
+    }
+
+    #[test]
+    fn coinbase_action_count_is_not_padded() {
+        for protocol in [BundleProtocol::Orchard, BundleProtocol::Ironwood] {
+            assert_eq!(protocol.coinbase_action_count(0), 0);
+            assert_eq!(protocol.coinbase_action_count(1), 1);
+            assert_eq!(protocol.coinbase_action_count(3), 3);
+        }
     }
 
     #[test]

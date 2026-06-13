@@ -11,7 +11,7 @@ use rand::{prelude::SliceRandom, CryptoRng, RngCore};
 
 use crate::{
     address::Address,
-    bundle::{Authorization, Authorized, Bundle, BundleProtocol, Flags},
+    bundle::{Authorization, Authorized, Bundle, BundleActionCountError, BundleProtocol, Flags},
     keys::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
@@ -88,7 +88,7 @@ impl BundleType {
         &self,
         num_spends: usize,
         num_outputs: usize,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, BundleActionCountError> {
         match self {
             BundleType::Transactional {
                 flags,
@@ -101,15 +101,15 @@ impl BundleType {
                 let num_requested_actions = if !flags.cross_address_enabled() {
                     num_spends
                         .checked_add(num_outputs)
-                        .ok_or("num_spends + num_outputs overflowed")?
+                        .ok_or(BundleActionCountError::InputCountOverflow)?
                 } else {
                     core::cmp::max(num_spends, num_outputs)
                 };
 
                 if !flags.spends_enabled() && num_spends > 0 {
-                    Err("Spends are disabled, so num_spends must be zero")
+                    Err(BundleActionCountError::SpendsDisabled)
                 } else if !flags.outputs_enabled() && num_outputs > 0 {
-                    Err("Outputs are disabled, so num_outputs must be zero")
+                    Err(BundleActionCountError::OutputsDisabled)
                 } else {
                     Ok(if *bundle_required || num_requested_actions > 0 {
                         core::cmp::max(num_requested_actions, MIN_ACTIONS)
@@ -120,7 +120,7 @@ impl BundleType {
             }
             BundleType::Coinbase => {
                 if num_spends > 0 {
-                    Err("Coinbase bundles have spends disabled, so num_spends must be zero")
+                    Err(BundleActionCountError::SpendsDisabled)
                 } else {
                     Ok(num_outputs)
                 }
