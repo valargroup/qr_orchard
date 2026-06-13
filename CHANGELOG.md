@@ -26,6 +26,12 @@ encoding.
   - `BundleProtocol::Ironwood` — Ironwood circuit, NU6.3 format,
     transactional `enableCrossAddress = 1` (V3 QR notes). Cross-address
     transfers in transactional bundles are permitted.
+- `orchard::BundleProtocol::transactional_action_count` and
+  `orchard::BundleProtocol::coinbase_action_count`, which let downstream fee
+  estimators and input selectors compute the number of actions a protocol
+  builder will produce without depending on internal bundle construction types.
+- `orchard::BundleActionCountError`, the error returned when an action count
+  cannot be computed from the requested spend and output counts.
 - `orchard::builder::Builder::new_coinbase`, a dedicated constructor for
   ZIP 213-style shielded coinbase bundles. It takes a [`BundleProtocol`] so
   callers can construct Orchard or Ironwood coinbase bundles. Downstream
