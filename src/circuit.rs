@@ -193,6 +193,10 @@ pub struct Circuit {
 }
 
 impl Circuit {
+    /// Constructs an empty circuit for key generation and verification setup.
+    ///
+    /// This uses unknown witnesses but keeps the selected circuit version so the
+    /// resulting proving or verifying key matches the intended statement shape.
     fn empty(circuit_version: OrchardCircuitVersion) -> Self {
         Circuit {
             path: Value::unknown(),
@@ -1120,8 +1124,9 @@ impl Instance {
     /// Use [`Bundle::verify_proof`] instead if you have the full bundle.
     ///
     /// The provided [`Flags`] are encoded into the spend/output enable public inputs and
-    /// the `disableCrossAddress` public input. If `disableCrossAddress` is set, callers
-    /// must use a proving or verifying key whose circuit version supports the
+    /// the `disableCrossAddress` public input, which is set to the negation of
+    /// [`Flags::cross_address_enabled`]. If cross-address transfers are disabled,
+    /// callers must use a proving or verifying key whose circuit version supports the
     /// cross-address restriction; [`Proof::create`], [`Proof::verify`], and
     /// [`crate::bundle::BatchValidator`] enforce this.
     ///
@@ -1152,7 +1157,7 @@ impl Instance {
             cmx,
             spends_enabled: flags.spends_enabled(),
             outputs_enabled: flags.outputs_enabled(),
-            cross_address_disabled: flags.cross_address_disabled(),
+            cross_address_disabled: !flags.cross_address_enabled(),
         })
     }
 
@@ -1508,17 +1513,17 @@ mod tests {
         let cmx = crate::note::ExtractedNoteCommitment::from_bytes(&read_32_bytes(&mut r)).unwrap();
         let spends_enabled = read_bool(&mut r);
         let outputs_enabled = read_bool(&mut r);
-        let (cross_address_disabled, format) = match encoding {
-            ProofFixtureEncoding::LegacyTwoFlags => (false, BundleFormat::PreNu6_3),
+        let (cross_address_bit, format) = match encoding {
+            ProofFixtureEncoding::LegacyTwoFlags => (0, BundleFormat::PreNu6_3),
             ProofFixtureEncoding::IronwoodThreeFlags => {
+                // The fixture stores the instance-level disable bit; the NU6.3 flag
+                // byte carries the enable bit, so invert when reconstructing.
                 let cross_address_disabled = read_bool(&mut r);
-                (cross_address_disabled, BundleFormat::Nu6_3)
+                (u8::from(!cross_address_disabled) << 2, BundleFormat::Nu6_3)
             }
         };
         let flags = Flags::from_byte(
-            u8::from(spends_enabled)
-                | (u8::from(outputs_enabled) << 1)
-                | (u8::from(cross_address_disabled) << 2),
+            u8::from(spends_enabled) | (u8::from(outputs_enabled) << 1) | cross_address_bit,
             format,
         )
         .expect("test vectors use canonical flag encodings");

@@ -25,9 +25,9 @@ struct BundleSignature {
 pub struct BatchValidator {
     proofs: plonk::BatchVerifier<vesta::Affine>,
     signatures: Vec<BundleSignature>,
-    /// Whether any queued instance disables cross-address transfers. Such statements can
+    /// Whether any queued bundle disables cross-address transfers. Such statements can
     /// only be validated with a verifying key whose circuit version constrains the
-    /// `disableCrossAddress` public input; the key is not known until [`Self::validate`].
+    /// cross-address restriction; the key is not known until [`Self::validate`].
     restricted: bool,
 }
 
@@ -43,9 +43,9 @@ impl BatchValidator {
 
     /// Adds the proof and RedPallas signatures from the given bundle to the validator.
     ///
-    /// If the bundle sets `disableCrossAddress`, this records that [`Self::validate`]
-    /// must be called with a verifying key whose circuit version supports the
-    /// cross-address restriction.
+    /// If the bundle flags disable cross-address transfers, this records that
+    /// [`Self::validate`] must be called with a verifying key whose circuit version
+    /// supports the cross-address restriction.
     pub fn add_bundle<V: Copy + Into<i64>>(
         &mut self,
         bundle: &Bundle<Authorized, V>,
@@ -65,8 +65,8 @@ impl BatchValidator {
                 .create_batch_item(bundle.authorization().binding_signature().clone(), &sighash),
         });
 
+        self.restricted |= !bundle.flags().cross_address_enabled();
         let instances = bundle.to_instances();
-        self.restricted |= instances.iter().any(|i| i.cross_address_disabled());
         bundle
             .authorization()
             .proof()
@@ -76,10 +76,10 @@ impl BatchValidator {
     /// Batch-validates the accumulated bundles.
     ///
     /// Returns `true` if every proof and signature in every bundle added to the batch
-    /// validator is valid, and any `disableCrossAddress` instances are supported by
+    /// validator is valid, and any cross-address-disabled bundles are supported by
     /// `vk`'s circuit version. Returns `false` if one or more proofs or signatures are
-    /// invalid, or if the batch contains a restricted instance and `vk` does not support
-    /// it. No attempt is made to figure out which of the accumulated bundles might be
+    /// invalid, or if the batch contains such a bundle and `vk` does not support it.
+    /// No attempt is made to figure out which of the accumulated bundles might be
     /// invalid; if that information is desired, construct separate [`BatchValidator`]s
     /// for sub-batches of the bundles.
     pub fn validate<R: RngCore + CryptoRng>(self, vk: &VerifyingKey, rng: R) -> bool {
@@ -135,9 +135,9 @@ mod tests {
         assert!(validator.restricted);
     }
 
-    // A bundle with fake authorizing data fails `validate` whether or not it sets
-    // `disableCrossAddress`, so instead check the key-capability short-circuit against an
-    // otherwise-empty batch, which is trivially valid.
+    // A bundle with fake authorizing data fails `validate` whether or not it disables
+    // cross-address transfers, so instead check the key-capability short-circuit against
+    // an otherwise-empty batch, which is trivially valid.
     #[test]
     fn validate_requires_key_support_for_cross_address_disabled() {
         for circuit_version in [

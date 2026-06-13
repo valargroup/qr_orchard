@@ -37,7 +37,7 @@ const MIN_ACTIONS: usize = 2;
 
 /// An enumeration of rules for Orchard bundle construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BundleType {
+pub(crate) enum BundleType {
     /// A transactional bundle will be padded if necessary to contain at least 2 actions,
     /// irrespective of whether any genuine actions are required.
     Transactional {
@@ -48,50 +48,43 @@ pub enum BundleType {
         /// actions in the resulting bundle will be dummies.
         bundle_required: bool,
     },
-    /// A coinbase bundle is required to have no non-dummy spends, and is built with
+    /// A coinbase bundle disables nonzero Orchard spends, and is built with
     /// [`Flags::SPENDS_DISABLED`]: spends disabled, outputs enabled, and
-    /// `disableCrossAddress` unset. No padding is performed.
+    /// cross-address transfers enabled. No padding is performed.
     ///
-    /// Coinbase bundles never set `disableCrossAddress`. Whether an Orchard-format
+    /// The cross-address restriction is not a useful way to express coinbase. An
+    /// Orchard action always has a spend half and an output half; with spends disabled,
+    /// the spend half is zero-valued dummy/fabricated spend data. If cross-address
+    /// transfers were also disabled, every output would need to be addressed to the
+    /// same receiver as that dummy spend, so a coinbase bundle could not pay an
+    /// arbitrary recipient.
+    ///
+    /// Therefore coinbase bundles always enable cross-address transfers. Under NU6.3
+    /// encoding this sets bit 2; if the same flag byte is interpreted by a pre-NU6.3
+    /// parser, it is rejected as a nonzero reserved bit. Whether an Orchard-format
     /// shielded coinbase bundle is permitted at all is a consensus rule outside this
-    /// crate, decided per pool: a pool may allow it (for example, a pool validating
-    /// bundles under the `FixedPostNu6_2` circuit version, or a pool that accepts
-    /// `disableCrossAddress = 0` bundles under the `Ironwood` circuit version), while
-    /// a pool whose rules require `disableCrossAddress = 1` on every bundle thereby
+    /// crate, decided per pool: a pool may allow unrestricted bundles, while a pool
+    /// whose rules require the cross-address restriction on every bundle thereby
     /// prohibits coinbase bundles entirely.
     Coinbase,
 }
 
 impl BundleType {
-    /// The default bundle type enables spends and outputs, leaves `disableCrossAddress` unset,
-    /// and does not require a bundle to be produced if no spends or outputs have been added to
-    /// the bundle.
-    pub const DEFAULT: BundleType = BundleType::Transactional {
-        flags: Flags::ENABLED,
-        bundle_required: false,
-    };
-
-    /// The DISABLED bundle type does not permit any bundle to be produced, and when used in the
-    /// builder will prevent any spends or outputs from being added.
-    pub const DISABLED: BundleType = BundleType::Transactional {
-        flags: Flags::from_parts(false, false),
-        bundle_required: false,
-    };
-
     /// Returns the number of logical actions that builder will produce in constructing a bundle
     /// of this type, given the specified numbers of spends and outputs.
     ///
-    /// For [`BundleType::Transactional`] bundles whose flags set `disableCrossAddress`,
-    /// a requested spend and a requested output never share an action (each is paired
-    /// with a fabricated zero-value counterpart), so the number of requested actions is
-    /// `num_spends + num_outputs` rather than `max(num_spends, num_outputs)`. Wallets
-    /// estimating fees (e.g. per [ZIP 317]) must account for this larger action count.
+    /// For [`BundleType::Transactional`] bundles whose flags disable cross-address
+    /// transfers, a requested spend and a requested output never share an action (each
+    /// is paired with a fabricated zero-value counterpart), so the number of requested
+    /// actions is `num_spends + num_outputs` rather than `max(num_spends, num_outputs)`.
+    /// Wallets estimating fees (e.g. per [ZIP 317]) must account for this larger action
+    /// count.
     ///
     /// Returns an error if the specified number of spends and outputs is incompatible with
     /// this bundle type.
     ///
     /// [ZIP 317]: https://zips.z.cash/zip-0317
-    pub fn num_actions(
+    pub(crate) fn num_actions(
         &self,
         num_spends: usize,
         num_outputs: usize,
@@ -105,7 +98,7 @@ impl BundleType {
                 // addressed to the note it spends, so a requested spend and a requested
                 // output can never share an action: each is paired with a fabricated
                 // zero-value counterpart instead.
-                let num_requested_actions = if flags.cross_address_disabled() {
+                let num_requested_actions = if !flags.cross_address_enabled() {
                     num_spends
                         .checked_add(num_outputs)
                         .ok_or("num_spends + num_outputs overflowed")?
@@ -136,7 +129,7 @@ impl BundleType {
     }
 
     /// Returns the set of flags that will be used for bundle construction.
-    pub fn flags(&self) -> Flags {
+    pub(crate) fn flags(&self) -> Flags {
         match self {
             BundleType::Transactional { flags, .. } => *flags,
             BundleType::Coinbase => Flags::SPENDS_DISABLED,
@@ -148,9 +141,9 @@ impl BundleType {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum BuildError {
-    /// Spends are disabled for the provided bundle type.
+    /// Spends are disabled for this builder.
     SpendsDisabled,
-    /// Outputs are disabled for the provided bundle type.
+    /// Outputs are disabled for this builder.
     OutputsDisabled,
     /// The anchor provided to this builder doesn't match the Merkle path used to add a spend.
     AnchorMismatch,
@@ -167,8 +160,8 @@ pub enum BuildError {
     /// A signature is valid for more than one input. This should never happen if `alpha`
     /// is sampled correctly, and indicates a critical failure in randomness generation.
     DuplicateSignature,
-    /// The bundle being constructed violated the construction rules for the requested bundle type.
-    BundleTypeNotSatisfiable,
+    /// The bundle being constructed violated the construction rules for the selected protocol.
+    BundleStructureNotSatisfiable,
     /// Cross-address transfers are disabled for the bundle being constructed, and an
     /// output is not a wallet-controlled change output.
     CrossAddressDisabled,
@@ -180,22 +173,21 @@ impl fmt::Display for BuildError {
         match self {
             MissingSignatures => f.write_str("Required signatures were missing during build"),
             #[cfg(feature = "circuit")]
-            Proof(halo2_proofs::plonk::Error::InvalidInstances) => {
-                f.write_str(
-                    "Could not create proof: provided instances do not match the circuit, \
-                     or `disableCrossAddress` is not supported by the proving key's circuit version",
-                )
-            }
+            Proof(halo2_proofs::plonk::Error::InvalidInstances) => f.write_str(
+                "Could not create proof: provided instances do not match the circuit, or \
+                 the cross-address restriction is not supported by the proving key's \
+                 circuit version",
+            ),
             #[cfg(feature = "circuit")]
             Proof(e) => write!(f, "Could not create proof: {e}"),
             ValueSum(_) => f.write_str("Overflow occurred during value construction"),
             InvalidExternalSignature => f.write_str("External signature was invalid"),
             DuplicateSignature => f.write_str("Signature valid for more than one input"),
-            BundleTypeNotSatisfiable => {
-                f.write_str("Bundle structure did not conform to requested bundle type.")
+            BundleStructureNotSatisfiable => {
+                f.write_str("Bundle structure did not conform to the selected protocol.")
             }
-            SpendsDisabled => f.write_str("Spends are not enabled for the requested bundle type."),
-            OutputsDisabled => f.write_str("Outputs are not enabled for the requested bundle type."),
+            SpendsDisabled => f.write_str("Spends are not enabled for this builder."),
+            OutputsDisabled => f.write_str("Outputs are not enabled for this builder."),
             AnchorMismatch => {
                 f.write_str("All spends must share the anchor requested for the transaction.")
             }
@@ -678,7 +670,7 @@ pub struct Builder {
 impl Builder {
     /// Constructs a new empty builder for the given [`BundleProtocol`].
     ///
-    /// The [`BundleType`], [`Flags`], and circuit version are all derived from `protocol`.
+    /// The internal bundle type, [`Flags`], and circuit version are all derived from `protocol`.
     /// Use [`Builder::build`] to finalize — no circuit version argument needed.
     pub fn new(protocol: BundleProtocol, anchor: Anchor) -> Self {
         Builder {
@@ -697,7 +689,8 @@ impl Builder {
     ///
     /// Coinbase bundles have spends disabled and contain exactly the outputs added —
     /// no `MIN_ACTIONS` padding is applied. The protocol selects the output note
-    /// version and circuit version; flags are fixed by [`BundleType::Coinbase`].
+    /// version and circuit version; flags are fixed to spends disabled, outputs enabled,
+    /// and cross-address transfers enabled.
     /// Downstream consensus policy decides whether coinbase bundles for that
     /// protocol are accepted at a given height.
     ///
@@ -755,8 +748,6 @@ impl Builder {
 
     /// Adds an address which will receive funds in this transaction.
     ///
-    /// Adds an address which will receive funds in this transaction.
-    ///
     /// Uses the note version determined by the [`BundleProtocol`] passed to
     /// [`Builder::new`] or [`Builder::new_coinbase`] — [`NoteVersion::V2`] for
     /// [`BundleProtocol::Orchard`] and [`NoteVersion::V3`] for
@@ -800,7 +791,7 @@ impl Builder {
         if !flags.outputs_enabled() {
             return Err(OutputError::OutputsDisabled);
         }
-        if flags.cross_address_disabled() {
+        if !flags.cross_address_enabled() {
             return Err(OutputError::CrossAddressDisabled);
         }
 
@@ -918,7 +909,7 @@ impl Builder {
             .and_then(|i| V::try_from(i).map_err(|_| value::BalanceError::Overflow))
     }
 
-    /// Builds a bundle containing the given spent notes and outputs for a given circuit version.
+    /// Builds a bundle containing the given spent notes and outputs.
     ///
     /// The returned bundle will have no proof or signatures; these can be applied with
     /// [`Bundle::create_proof`] and [`Bundle::apply_signatures`] respectively.
@@ -1000,13 +991,13 @@ impl Builder {
     }
 }
 
-/// Builds a coinbase bundle for the given [`BundleProtocol`] from pre-computed outputs.
+/// Builds a coinbase bundle for the given [`BundleProtocol`] from precomputed outputs.
 ///
 /// Coinbase bundles have spends disabled and contain exactly the provided outputs —
-/// no `MIN_ACTIONS` padding is applied. The protocol selects the circuit
-/// version and internally generated default note versions; the supplied
-/// pre-computed outputs keep their explicit note versions. Callers that prefer
-/// the builder pattern should use [`Builder::new_coinbase`] instead.
+/// no `MIN_ACTIONS` padding is applied. The protocol selects the circuit version
+/// and flags; the supplied outputs keep their explicit note versions. Callers
+/// that want output note versions derived from the protocol should use
+/// [`Builder::new_coinbase`] instead.
 ///
 /// Returns `None` if `outputs` is empty.
 #[cfg(feature = "circuit")]
@@ -1038,8 +1029,10 @@ pub fn coinbase_bundle<V: TryFrom<i64>>(
     )
 }
 
-/// Builds a bundle containing the given spent notes and outputs, with the Action circuits built
-/// The circuit version is derived from `protocol`.
+/// Builds a bundle containing the given spent notes and outputs.
+///
+/// The [`BundleProtocol`] selects the circuit version, note version for generated
+/// dummy and fabricated notes, and transactional flags.
 #[cfg(feature = "circuit")]
 pub fn bundle<V: TryFrom<i64>>(
     rng: impl RngCore,
@@ -1159,9 +1152,9 @@ fn build_bundle<B, R: RngCore>(
 
     let num_actions = bundle_type
         .num_actions(num_requested_spends, num_requested_outputs)
-        .map_err(|_| BuildError::BundleTypeNotSatisfiable)?;
+        .map_err(|_| BuildError::BundleStructureNotSatisfiable)?;
 
-    let (pre_actions, bundle_meta) = if flags.cross_address_disabled() {
+    let (pre_actions, bundle_meta) = if !flags.cross_address_enabled() {
         // Every action's output must be addressed to the note it spends, so the
         // spend/output pairing within each action is intentional:
         //
@@ -1764,7 +1757,7 @@ mod tests {
         OutputError, OutputInfo, MIN_ACTIONS,
     };
     use crate::{
-        bundle::{Authorized, Bundle, BundleProtocol},
+        bundle::{Authorized, Bundle, BundleFormat, BundleProtocol},
         circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
         constants::MERKLE_DEPTH_ORCHARD,
         keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
@@ -1876,7 +1869,7 @@ mod tests {
         assert_eq!(balance, 10_000);
 
         let (pczt_bundle, bundle_meta) = builder.build_for_pczt(&mut rng).unwrap();
-        assert!(pczt_bundle.flags().cross_address_disabled());
+        assert!(!pczt_bundle.flags().cross_address_enabled());
         assert_eq!(pczt_bundle.actions().len(), 2);
         assert_eq!(i64::try_from(pczt_bundle.value_sum).unwrap(), 10_000);
         pczt_bundle.verify_cross_address_restriction().unwrap();
@@ -2000,7 +1993,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(bundle.flags().cross_address_disabled());
+        assert!(!bundle.flags().cross_address_enabled());
         assert!(bundle_meta.output_action_index(0).is_some());
     }
 
@@ -2154,14 +2147,14 @@ mod tests {
         let bundle = builder.build::<i64>(&mut rng).unwrap().unwrap().0;
 
         assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
-        assert!(bundle.flags().cross_address_disabled());
+        assert!(!bundle.flags().cross_address_enabled());
 
         let ironwood_pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
         let ironwood_vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
         let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
 
         let proven = bundle.create_proof(&ironwood_pk, &mut rng).unwrap();
-        let sighash: [u8; 32] = proven.commitment().into();
+        let sighash: [u8; 32] = proven.commitment(BundleFormat::Nu6_3).into();
         let authorized = proven
             .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
             .unwrap();
@@ -2222,10 +2215,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-        // Exactly one action, no padding, spends disabled, cross-address unset.
+        // Exactly one action, no padding, spends disabled, cross-address enabled.
         assert_eq!(bundle.actions().len(), 1);
         assert!(!bundle.flags().spends_enabled());
-        assert!(!bundle.flags().cross_address_disabled());
+        assert!(bundle.flags().cross_address_enabled());
         assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
 
         let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
@@ -2233,7 +2226,7 @@ mod tests {
         let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
 
         let proven = bundle.create_proof(&pk, &mut rng).unwrap();
-        let sighash: [u8; 32] = proven.commitment().into();
+        let sighash: [u8; 32] = proven.commitment(BundleFormat::Nu6_3).into();
         let authorized = proven.apply_signatures(rng, sighash, &[]).unwrap();
 
         assert!(matches!(authorized.verify_proof(&ironwood_vk), Ok(())));
@@ -2269,7 +2262,7 @@ mod tests {
 
         assert_eq!(bundle.actions().len(), 1);
         assert!(!bundle.flags().spends_enabled());
-        assert!(!bundle.flags().cross_address_disabled());
+        assert!(bundle.flags().cross_address_enabled());
         assert_eq!(bundle.circuit_version(), OrchardCircuitVersion::Ironwood);
 
         let output_action_index = bundle_meta.output_action_index(0).unwrap();

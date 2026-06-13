@@ -16,7 +16,25 @@ impl super::Bundle {
     /// Adds a proof to this PCZT bundle.
     ///
     /// The Action circuits are built for `pk`'s circuit version; the caller selects the
-    /// proving key matching the transaction format the PCZT targets.
+    /// proving key matching the transaction format the PCZT targets. If the PCZT
+    /// bundle disables cross-address transfers, the key must be an
+    /// [`OrchardCircuitVersion::Ironwood`] proving key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProverError::DisallowedCrossAddressTransfer`] if the bundle
+    /// disables cross-address transfers and any action's output is addressed
+    /// differently than its spent note.
+    ///
+    /// Returns [`ProverError::ProofFailed`] containing
+    /// [`plonk::Error::InvalidInstances`] if the bundle disables cross-address
+    /// transfers and `pk` is not an
+    /// [`OrchardCircuitVersion::Ironwood`] proving key.
+    ///
+    /// Also returns an error if required Prover-role fields are missing or invalid,
+    /// or if proof creation fails.
+    ///
+    /// [`OrchardCircuitVersion::Ironwood`]: crate::circuit::OrchardCircuitVersion::Ironwood
     pub fn create_proof<R: RngCore + CryptoRng>(
         &mut self,
         pk: &ProvingKey,
@@ -29,7 +47,7 @@ impl super::Bundle {
             return Ok(());
         }
 
-        if self.flags.cross_address_disabled() {
+        if !self.flags.cross_address_enabled() {
             // Check the restriction structurally before synthesizing any circuit, for a
             // clear error instead of an unsatisfiable-constraint failure.
             for action in &self.actions {
@@ -203,8 +221,9 @@ impl fmt::Display for ProverError {
             ProverError::ProofFailed(halo2_proofs::plonk::Error::InvalidInstances) => {
                 write!(
                     f,
-                    "Failed to create proof: provided instances do not match the circuit, \
-                     or `disableCrossAddress` is not supported by the proving key's circuit version",
+                    "Failed to create proof: provided instances do not match the circuit, or \
+                     the cross-address restriction is not supported by the proving key's \
+                     circuit version",
                 )
             }
             ProverError::ProofFailed(e) => write!(f, "Failed to create proof: {e}"),

@@ -3,7 +3,7 @@
 use incrementalmerkletree::{Hashable, Marking, Retention};
 use orchard::{
     builder::Builder,
-    bundle::{Authorized, BatchValidator},
+    bundle::{Authorized, BatchValidator, BundleFormat},
     circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
     keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
     note::{ExtractedNoteCommitment, NoteVersion},
@@ -40,9 +40,9 @@ fn single_leaf_witness(cmx: &ExtractedNoteCommitment) -> (MerkleHashOrchard, Mer
     (root, merkle_path.into())
 }
 
-fn verify_bundle(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey) {
+fn verify_bundle(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, format: BundleFormat) {
     assert!(matches!(bundle.verify_proof(vk), Ok(())));
-    let sighash: [u8; 32] = bundle.commitment().into();
+    let sighash: [u8; 32] = bundle.commitment(format).into();
     let bvk = bundle.binding_validating_key();
     for action in bundle.actions() {
         assert_eq!(action.rk().verify(&sighash, action.authorization()), Ok(()));
@@ -92,13 +92,13 @@ fn bundle_chain() {
             Some(NoteValue::from_raw(5000))
         );
 
-        let sighash = unauthorized.commitment().into();
+        let sighash = unauthorized.commitment(BundleFormat::Nu6_3).into();
         let proven = unauthorized.create_proof(&pk, &mut rng).unwrap();
         proven.apply_signatures(rng, sighash, &[]).unwrap()
     };
 
     // Verify the shielding bundle.
-    verify_bundle(&shielding_bundle, &vk);
+    verify_bundle(&shielding_bundle, &vk, BundleFormat::Nu6_3);
 
     // Create a shielded bundle spending the previous output.
     let shielded_bundle: Bundle<_, i64> = {
@@ -123,7 +123,7 @@ fn bundle_chain() {
             Ok(())
         );
         let (unauthorized, _) = builder.build(&mut rng).unwrap().unwrap();
-        let sighash = unauthorized.commitment().into();
+        let sighash = unauthorized.commitment(BundleFormat::Nu6_3).into();
         let proven = unauthorized.create_proof(&pk, &mut rng).unwrap();
         proven
             .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
@@ -131,7 +131,7 @@ fn bundle_chain() {
     };
 
     // Verify the shielded bundle.
-    verify_bundle(&shielded_bundle, &vk);
+    verify_bundle(&shielded_bundle, &vk, BundleFormat::Nu6_3);
 }
 
 #[test]
@@ -152,11 +152,11 @@ fn builder_builds_for_ironwood_circuit_version() {
         OrchardCircuitVersion::Ironwood
     );
 
-    let sighash: [u8; 32] = unauthorized.commitment().into();
+    let sighash: [u8; 32] = unauthorized.commitment(BundleFormat::Nu6_3).into();
     let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
     let bundle = proven.apply_signatures(rng, sighash, &[]).unwrap();
 
-    verify_bundle(&bundle, &ironwood_vk);
+    verify_bundle(&bundle, &ironwood_vk, BundleFormat::Nu6_3);
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn builder_builds_for_orchard_protocol() {
     );
     assert!(unauthorized.flags().spends_enabled());
     assert!(unauthorized.flags().outputs_enabled());
-    assert!(unauthorized.flags().cross_address_disabled());
+    assert!(!unauthorized.flags().cross_address_enabled());
     assert_eq!(
         unauthorized
             .decrypt_output_with_key(
@@ -203,18 +203,18 @@ fn builder_builds_for_orchard_protocol() {
         Some((NoteValue::from_raw(5000), NoteVersion::V2))
     );
 
-    let sighash: [u8; 32] = unauthorized.commitment().into();
+    let sighash: [u8; 32] = unauthorized.commitment(BundleFormat::Nu6_3).into();
     let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
     let bundle = proven
         .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
         .unwrap();
 
-    verify_bundle(&bundle, &ironwood_vk);
+    verify_bundle(&bundle, &ironwood_vk, BundleFormat::Nu6_3);
     assert!(bundle.verify_proof(&fixed_vk).is_err());
 }
 
 // Orchard pool coinbase: a single output-only action, no padding, spends disabled,
-// disableCrossAddress unset. Downstream consensus policy decides whether this
+// cross-address transfers enabled. Downstream consensus policy decides whether this
 // bundle type is accepted at a given height.
 #[test]
 fn orchard_coinbase_builder_constructs_v2_output() {
@@ -234,7 +234,7 @@ fn orchard_coinbase_builder_constructs_v2_output() {
 
     assert_eq!(unauthorized.actions().len(), 1);
     assert!(!unauthorized.flags().spends_enabled());
-    assert!(!unauthorized.flags().cross_address_disabled());
+    assert!(unauthorized.flags().cross_address_enabled());
     assert_eq!(
         unauthorized.circuit_version(),
         OrchardCircuitVersion::Ironwood
@@ -248,7 +248,7 @@ fn orchard_coinbase_builder_constructs_v2_output() {
 }
 
 // Ironwood pool coinbase: a single output-only action, no padding, spends disabled,
-// disableCrossAddress unset. Verifies under the Ironwood VK; rejected by FixedPostNu6_2.
+// cross-address transfers enabled. Verifies under the Ironwood VK; rejected by FixedPostNu6_2.
 #[test]
 fn ironwood_coinbase_proves_and_verifies() {
     let mut rng = OsRng;
@@ -271,7 +271,7 @@ fn ironwood_coinbase_proves_and_verifies() {
 
     assert_eq!(unauthorized.actions().len(), 1);
     assert!(!unauthorized.flags().spends_enabled());
-    assert!(!unauthorized.flags().cross_address_disabled());
+    assert!(unauthorized.flags().cross_address_enabled());
     assert_eq!(
         unauthorized.circuit_version(),
         OrchardCircuitVersion::Ironwood
@@ -282,11 +282,11 @@ fn ironwood_coinbase_proves_and_verifies() {
         .unwrap();
     assert_eq!(note.version(), NoteVersion::V3);
 
-    let sighash: [u8; 32] = unauthorized.commitment().into();
+    let sighash: [u8; 32] = unauthorized.commitment(BundleFormat::Nu6_3).into();
     let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
     let bundle = proven.apply_signatures(rng, sighash, &[]).unwrap();
 
-    verify_bundle(&bundle, &ironwood_vk);
+    verify_bundle(&bundle, &ironwood_vk, BundleFormat::Nu6_3);
     assert!(bundle.verify_proof(&fixed_vk).is_err());
 }
 
@@ -308,12 +308,12 @@ fn ironwood_restricted_bundle_chain() {
         let builder = output_only_builder(BundleProtocol::Ironwood, recipient);
 
         let (unauthorized, _) = builder.build(&mut rng).unwrap().unwrap();
-        let sighash = unauthorized.commitment().into();
+        let sighash = unauthorized.commitment(BundleFormat::Nu6_3).into();
         let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
         proven.apply_signatures(rng, sighash, &[]).unwrap()
     };
 
-    verify_bundle(&shielding_bundle, &ironwood_vk);
+    verify_bundle(&shielding_bundle, &ironwood_vk, BundleFormat::Nu6_3);
     assert!(shielding_bundle.verify_proof(&fixed_vk).is_err());
 
     let change_addr = fvk.address_at(0u32, Scope::Internal);
@@ -362,7 +362,7 @@ fn ironwood_restricted_bundle_chain() {
             Some((NoteValue::from_raw(3000), change_addr))
         );
 
-        let sighash = unauthorized.commitment().into();
+        let sighash = unauthorized.commitment(BundleFormat::Nu6_3).into();
         let proven = unauthorized.create_proof(&ironwood_pk, &mut rng).unwrap();
         proven
             .apply_signatures(rng, sighash, &[SpendAuthorizingKey::from(&sk)])
@@ -370,14 +370,20 @@ fn ironwood_restricted_bundle_chain() {
     };
 
     assert_eq!(restricted_bundle.value_balance(), &2000);
-    verify_bundle(&restricted_bundle, &ironwood_vk);
+    verify_bundle(&restricted_bundle, &ironwood_vk, BundleFormat::Nu6_3);
     assert!(restricted_bundle.verify_proof(&fixed_vk).is_err());
 
     let mut validator = BatchValidator::new();
-    validator.add_bundle(&restricted_bundle, restricted_bundle.commitment().into());
+    validator.add_bundle(
+        &restricted_bundle,
+        restricted_bundle.commitment(BundleFormat::Nu6_3).into(),
+    );
     assert!(validator.validate(&ironwood_vk, rng));
 
     let mut validator = BatchValidator::new();
-    validator.add_bundle(&restricted_bundle, restricted_bundle.commitment().into());
+    validator.add_bundle(
+        &restricted_bundle,
+        restricted_bundle.commitment(BundleFormat::Nu6_3).into(),
+    );
     assert!(!validator.validate(&fixed_vk, rng));
 }

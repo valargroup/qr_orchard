@@ -7,8 +7,8 @@ and this project adheres to Rust's notion of
 
 ## [Unreleased]
 
-All changes in this release support the NU6.3 `disableCrossAddress` bundle
-flag, the Ironwood Orchard Action circuit that enforces it, and QR note
+All changes in this release support the NU6.3 `enableCrossAddress` bundle
+flag, the Ironwood Orchard Action circuit that enforces the cross-address restriction, and QR note
 plaintext version support. Callers targeting the existing Orchard pool pass
 `BundleProtocol::Orchard` to builder APIs; callers targeting the new Ironwood
 QR pool pass `BundleProtocol::Ironwood`. Low-level APIs that parse or serialize
@@ -21,17 +21,17 @@ encoding.
   and transactional `Flags` — that previously had to be passed separately at
   construction, build, and serialization time. One variant per pool:
   - `BundleProtocol::Orchard` — Ironwood circuit, NU6.3 format,
-    transactional `disableCrossAddress = 1` (V2 notes). Cross-address
+    transactional `enableCrossAddress = 0` (V2 notes). Cross-address
     transfers in transactional bundles are prohibited by consensus in this pool.
   - `BundleProtocol::Ironwood` — Ironwood circuit, NU6.3 format,
-    transactional `disableCrossAddress = 0` (V3 QR notes). Cross-address
+    transactional `enableCrossAddress = 1` (V3 QR notes). Cross-address
     transfers in transactional bundles are permitted.
 - `orchard::builder::Builder::new_coinbase`, a dedicated constructor for
   ZIP 213-style shielded coinbase bundles. It takes a [`BundleProtocol`] so
   callers can construct Orchard or Ironwood coinbase bundles. Downstream
   consensus policy decides which pool is valid at a given height. Coinbase
-  bundles have spends disabled, `disableCrossAddress` unset, and no MIN_ACTIONS
-  padding.
+  bundles have spends disabled, cross-address transfers enabled, and no
+  MIN_ACTIONS padding.
 - `orchard::builder::Builder::require_bundle`, which forces the builder to
   produce a bundle even when no real spends or outputs have been added
   (producing a bundle of dummy-only actions). Returns
@@ -55,15 +55,17 @@ encoding.
 - `orchard::pczt::Spend::note_version`, exposed via the existing PCZT spend
   getter pattern, so PCZT verifiers and provers can reconstruct spent note
   commitments with the intended note plaintext version.
-- `orchard::bundle::Flags` APIs for the NU6.3 `disableCrossAddress` flag:
+- `orchard::bundle::Flags` APIs for the NU6.3 `enableCrossAddress` flag:
   - `Flags::CROSS_ADDRESS_DISABLED`
-  - `Flags::cross_address_disabled`
+  - `Flags::cross_address_enabled`
 - `orchard::bundle::BundleFormat`, selecting whether an Orchard bundle flag
   byte is interpreted under pre-NU6.3 transaction encoding rules (bit 2 is
-  reserved) or NU6.3 rules (bit 2 is `disableCrossAddress`).
+  reserved and cross-address transfers are implicitly enabled) or NU6.3 rules
+  (bit 2 is `enableCrossAddress`).
 - `orchard::circuit::OrchardCircuitVersion::Ironwood`, the circuit version
-  that enforces the `disableCrossAddress` public input. Ironwood has its own
-  proving and verifying keys.
+  that enforces the `disableCrossAddress` public input (the negation of the
+  bundle's `enableCrossAddress` flag). Ironwood has its own proving and
+  verifying keys.
 - Circuit-version support introspection for the cross-address restriction:
   - `orchard::circuit::OrchardCircuitVersion::supports_cross_address_restriction`
   - `orchard::circuit::ProvingKey::supports_cross_address_restriction`
@@ -76,9 +78,10 @@ encoding.
     `NoteVersion`; use [`Builder::add_change_output`] to have the version
     derived automatically from the [`BundleProtocol`].
 - `orchard::pczt::Bundle::verify_cross_address_restriction`, so that Signers
-  can check the `disableCrossAddress` same-receiver structural property before
-  signing. It is a no-op for bundles that permit cross-address transfers.
-- Error variants for the `disableCrossAddress` builder and PCZT checks:
+  can check the cross-address restriction's same-receiver structural property
+  before signing. It is a no-op for bundles that permit cross-address
+  transfers.
+- Error variants for the cross-address builder and PCZT checks:
   - `orchard::builder::BuildError::CrossAddressDisabled`
   - `orchard::builder::OutputError::{CrossAddressDisabled, FvkMismatch}`
   - `orchard::pczt::VerifyError::DisallowedCrossAddressTransfer`
@@ -86,8 +89,9 @@ encoding.
   - `orchard::pczt::IoFinalizerError::CrossAddressRestriction`
 - `orchard::bundle::testing::arb_flags_nu6_3` (under the `test-dependencies`
   feature), a strategy that generates flag sets under NU6.3 encoding rules,
-  including `disableCrossAddress`. `arb_flags` is unchanged and only generates
-  flag sets that are representable before NU6.3.
+  including flag sets that disable cross-address transfers. `arb_flags` is
+  unchanged and only generates flag sets with cross-address transfers enabled,
+  which are representable in every transaction format.
 
 ### Changed
 - `orchard::pczt::Output::parse` now takes an `orchard::NoteVersion` argument.
@@ -99,9 +103,12 @@ encoding.
 - `orchard::bundle::Flags::{from_byte, to_byte}` and
   `orchard::pczt::Bundle::parse` now take a `BundleFormat`. Under
   `BundleFormat::Nu6_3`, bit 2 is parsed and serialized as
-  `disableCrossAddress`; under `BundleFormat::PreNu6_3`, bit 2 remains
-  reserved, and `Flags::to_byte` (which now returns `Option<u8>`) returns
-  `None` if `disableCrossAddress` is set.
+  `enableCrossAddress`; under `BundleFormat::PreNu6_3`, bit 2 remains
+  reserved, parsing yields flags with cross-address transfers enabled, and
+  `Flags::to_byte` (which now returns `Option<u8>`) returns `None` if
+  cross-address transfers are disabled. The same flag byte is therefore
+  interpreted differently per era: a byte with bit 2 clear parses as an
+  unrestricted bundle before NU6.3 and a restricted bundle under NU6.3.
 - `orchard::Note::from_parts` now takes an explicit `NoteVersion` parameter
   instead of hard-coding `NoteVersion::DEFAULT`. Callers that previously
   relied on the default should pass `NoteVersion::DEFAULT` explicitly.
@@ -112,7 +119,7 @@ encoding.
   now takes an explicit `NoteVersion` parameter so that dummy notes match the
   pool's note version.
 - Dummy notes produced during bundle padding and fabricated same-receiver
-  actions in `disableCrossAddress` bundles now use the pool's note version
+  actions in bundles that disable cross-address transfers now use the pool's note version
   (derived from the [`BundleProtocol`]) rather than hard-coding
   `NoteVersion::DEFAULT`. This ensures circuit consistency: all notes in an
   Ironwood pool bundle carry V3 commitments, and all notes in an Orchard pool
@@ -138,8 +145,10 @@ encoding.
   `OrchardCircuitVersion` argument; the circuit version is derived from the
   `BundleProtocol` passed to `Builder::new`.
 - `orchard::builder::bundle` (the free function) likewise derives circuit
-  version and bundle type from its `BundleProtocol` argument rather than
-  taking them separately.
+  version, flags, and internal construction mode from its `BundleProtocol`
+  argument rather than taking them separately.
+- `orchard::builder::BuildError::BundleTypeNotSatisfiable` has been renamed to
+  `BundleStructureNotSatisfiable`, since `BundleType` is no longer public API.
 - Circuit-building APIs now take the intended `OrchardCircuitVersion`
   explicitly instead of implicitly selecting `FixedPostNu6_2` — pass
   `FixedPostNu6_2` for the previous behavior, or `Ironwood` for restricted
@@ -147,13 +156,12 @@ encoding.
   - `orchard::circuit::ProvingKey::build`
   - `orchard::circuit::VerifyingKey::build`
   - `orchard::circuit::Circuit::from_action_context`
-  - `orchard::builder::bundle`
 - `orchard::circuit::Instance::from_parts` now takes an
   `orchard::bundle::Flags` argument instead of separate spend/output enable
-  booleans, so the `disableCrossAddress` flag is carried into the public
+  booleans, so the cross-address restriction is carried into the public
   instances.
-- Proof APIs reject instances that set `disableCrossAddress` unless the key's
-  circuit version supports the cross-address restriction.
+- Proof APIs reject instances that disable cross-address transfers unless the
+  key's circuit version supports the cross-address restriction.
   `orchard::Proof::{create, verify}` and `orchard::Bundle::verify_proof`
   return `halo2_proofs::plonk::Error::InvalidInstances`; with pre-Ironwood
   keys, proving a restricted builder-created bundle returns
@@ -164,37 +172,38 @@ encoding.
   `orchard::Bundle::<Authorized, V>::try_from_parts` and
   `orchard::pczt::Bundle::extract` preserve the flag — with enforcement at
   proving and verification.
-- `orchard::builder::Builder` constructs `disableCrossAddress` bundles as
-  withdrawal/change bundles in which every action's output is addressed to
-  the note it spends:
-  - Requested spends are each paired with a fabricated zero-value output to
-    the spent note's address (which the owning wallet will trial-decrypt when
-    scanning); requested change outputs are each paired with a fabricated
-    zero-value spend at the change address; padding actions pair a dummy
-    spend with a zero-value output to the dummy's address.
+- `orchard::builder::Builder` constructs bundles that disable cross-address
+  transfers as withdrawal/change bundles in which every action's output is
+  addressed to the receiver of the note it spends. Fabricated zero-value
+  outputs are addressed there too, so the owning wallet trial-decrypts them
+  when scanning.
   - `Builder::add_output` returns `OutputError::CrossAddressDisabled` for
     these bundles; use `Builder::add_change_output` for retained value.
-  - `orchard::builder::BundleType::num_actions` counts
-    `num_spends + num_outputs` requested actions rather than the maximum of
-    the two (a requested spend and a requested output never share an action),
-    and `orchard::builder::BundleMetadata` maps them to distinct actions.
+  - The builder counts `num_spends + num_outputs` requested actions rather
+    than the maximum of the two (a requested spend and a requested output never
+    share an action), and `orchard::builder::BundleMetadata` maps them to
+    distinct actions.
     Wallets estimating fees (e.g. per ZIP 317) must account for the larger
     action count.
 - `orchard::pczt::Bundle::create_proof` now builds the Action circuits for
   the provided `ProvingKey`'s circuit version (previously always
-  `FixedPostNu6_2`), and checks the `disableCrossAddress` same-receiver
+  `FixedPostNu6_2`), and checks the cross-address restriction's same-receiver
   property before building any circuits, returning
   `ProverError::DisallowedCrossAddressTransfer` (or
   `ProverError::MissingRecipient` if a `recipient` field is unset).
-- `orchard::pczt::Bundle::finalize_io` verifies the `disableCrossAddress`
-  restriction before computing `bsk` or signing dummy spends, returning
+- `orchard::pczt::Bundle::finalize_io` verifies the cross-address restriction
+  before computing `bsk` or signing dummy spends, returning
   `IoFinalizerError::CrossAddressRestriction` (wrapping the underlying
   `VerifyError`) and leaving the bundle unmodified if the PCZT is missing
   recipient data or violates the restriction.
-- `orchard::Bundle::commitment` hashes the raw Orchard flag byte, including
-  the NU6.3 `disableCrossAddress` bit when set. This changes the ZIP-244
-  Orchard digest, and therefore transaction IDs and sighashes, for bundles
-  that set that flag.
+- `orchard::Bundle::commitment` now takes the `BundleFormat` of the
+  transaction encoding the bundle appears in, and hashes that format's flag
+  byte (via `Flags::to_byte`). The ZIP-244 Orchard digest — and therefore the
+  transaction ID and sighash — now depends on `BundleFormat`: under `Nu6_3` an
+  unrestricted bundle's flag byte sets bit 2. Callers computing transaction IDs
+  or sighashes must pass the `BundleFormat` matching the transaction's
+  consensus branch. Panics if the flags are unrepresentable in `format`
+  (cross-address transfers disabled under `PreNu6_3`).
 
 ### Removed
 - `orchard::Note::from_parts_with_version`; `Note::from_parts` now takes an

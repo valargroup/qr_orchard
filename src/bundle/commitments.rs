@@ -2,7 +2,7 @@
 
 use blake2b_simd::{Hash as Blake2bHash, Params, State};
 
-use crate::bundle::{Authorization, Authorized, Bundle};
+use crate::bundle::{Authorization, Authorized, Bundle, BundleFormat};
 
 const ZCASH_ORCHARD_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrchardHash";
 const ZCASH_ORCHARD_ACTIONS_COMPACT_HASH_PERSONALIZATION: &[u8; 16] = b"ZTxIdOrcActCHash";
@@ -29,6 +29,7 @@ fn hasher(personal: &[u8; 16]) -> State {
 /// [zip244]: https://zips.z.cash/zip-0244
 pub(crate) fn hash_bundle_txid_data<A: Authorization, V: Copy + Into<i64>>(
     bundle: &Bundle<A, V>,
+    format: BundleFormat,
 ) -> Blake2bHash {
     let mut h = hasher(ZCASH_ORCHARD_HASH_PERSONALIZATION);
     let mut ch = hasher(ZCASH_ORCHARD_ACTIONS_COMPACT_HASH_PERSONALIZATION);
@@ -52,9 +53,9 @@ pub(crate) fn hash_bundle_txid_data<A: Authorization, V: Copy + Into<i64>>(
     h.update(ch.finalize().as_bytes());
     h.update(mh.finalize().as_bytes());
     h.update(nh.finalize().as_bytes());
-    // Effects hashing commits to the raw Orchard flag byte. Transaction encoding must
-    // separately check whether that byte is representable in the target format.
-    h.update(&[bundle.flags().to_byte_internal()]);
+    h.update(&[bundle.flags().to_byte(format).expect(
+        "cross-address-restricted bundles are not representable in pre-NU6.3 transaction formats",
+    )]);
     h.update(&(*bundle.value_balance()).into().to_le_bytes());
     h.update(&bundle.anchor().to_bytes());
     h.finalize()

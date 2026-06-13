@@ -21,8 +21,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     let sk = SpendingKey::from_bytes([7; 32]).unwrap();
     let recipient = FullViewingKey::from(&sk).address_at(0u32, Scope::External);
 
-    let vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
-    let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+    let vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
+    let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
 
     let create_bundle = |num_recipients| {
         let mut builder = Builder::new(

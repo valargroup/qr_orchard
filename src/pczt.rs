@@ -441,7 +441,7 @@ mod tests {
         let mut pczt_bundle = builder.build_for_pczt(&mut *rng).unwrap().0;
 
         let sighash = [0; 32];
-        pczt_bundle.finalize_io(sighash, &mut *rng).unwrap();
+        pczt_bundle.finalize_io(sighash, *rng).unwrap();
         pczt_bundle
     }
 
@@ -473,17 +473,17 @@ mod tests {
 
         // Run the IO Finalizer role.
         let sighash = [0; 32];
-        pczt_bundle.finalize_io(sighash, &mut rng).unwrap();
+        pczt_bundle.finalize_io(sighash, rng).unwrap();
 
         // Run the Prover role.
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         // Run the Transaction Extractor role.
         let bundle = pczt_bundle.extract::<i64>().unwrap().unwrap();
 
         assert_eq!(bundle.value_balance(), &(-5000));
         // We can successfully bind the bundle.
-        bundle.apply_binding_signature(sighash, &mut rng).unwrap();
+        bundle.apply_binding_signature(sighash, rng).unwrap();
     }
 
     #[test]
@@ -520,9 +520,9 @@ mod tests {
             .expect("V3 output version verifies the QR note commitment");
 
         let sighash = [0; 32];
-        pczt_bundle.finalize_io(sighash, &mut rng).unwrap();
+        pczt_bundle.finalize_io(sighash, rng).unwrap();
         pczt_bundle
-            .create_proof(&pk, &mut rng)
+            .create_proof(&pk, rng)
             .expect("V3 output version reconstructs the QR note for proving");
 
         // Try mutating the note version and verify the proof fails.
@@ -534,13 +534,13 @@ mod tests {
             action.output.verify_note_commitment(&action.spend),
             Err(VerifyError::InvalidExtractedNoteCommitment)
         ));
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         let bundle = pczt_bundle
             .extract::<i64>()
             .unwrap()
             .unwrap()
-            .apply_binding_signature(sighash, &mut rng)
+            .apply_binding_signature(sighash, rng)
             .unwrap();
         assert!(bundle.verify_proof(&vk).is_err());
     }
@@ -555,13 +555,13 @@ mod tests {
         let sighash = [0; 32];
         // This is the load-bearing assertion: if PCZT proving still built FixedPostNu6_2
         // circuits unconditionally, `Proof::create` would reject them for this Ironwood key.
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         let bundle = pczt_bundle
             .extract::<i64>()
             .unwrap()
             .unwrap()
-            .apply_binding_signature(sighash, &mut rng)
+            .apply_binding_signature(sighash, rng)
             .unwrap();
 
         assert!(bundle.verify_proof(&vk).is_ok());
@@ -634,9 +634,9 @@ mod tests {
             .verify_nullifier(None)
             .expect("V3 spend version verifies the QR note nullifier");
 
-        pczt_bundle.finalize_io([0; 32], &mut rng).unwrap();
+        pczt_bundle.finalize_io([0; 32], rng).unwrap();
         pczt_bundle
-            .create_proof(&pk, &mut rng)
+            .create_proof(&pk, rng)
             .expect("V3 spend version reconstructs the QR note for proving");
 
         let action = &mut pczt_bundle.actions_mut()[spend_action_index];
@@ -648,7 +648,7 @@ mod tests {
             Err(VerifyError::InvalidNullifier)
         ));
         assert!(matches!(
-            pczt_bundle.create_proof(&pk, &mut rng),
+            pczt_bundle.create_proof(&pk, rng),
             Err(ProverError::RhoMismatch)
         ));
     }
@@ -730,7 +730,7 @@ mod tests {
 
         // Run the IO Finalizer role.
         let sighash = [0; 32];
-        pczt_bundle.finalize_io(sighash, &mut rng).unwrap();
+        pczt_bundle.finalize_io(sighash, rng).unwrap();
 
         // Run the Updater role.
         for action in pczt_bundle.actions_mut() {
@@ -743,7 +743,7 @@ mod tests {
         }
 
         // Run the Prover role.
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         // TODO: Verify that the PCZT contains sufficient information to decrypt and check
         // `enc_ciphertext`.
@@ -751,7 +751,7 @@ mod tests {
         // Run the Signer role.
         for action in pczt_bundle.actions_mut() {
             if action.spend.zip32_derivation.as_ref() == Some(&zip32_derivation) {
-                action.sign(sighash, &ask, &mut rng).unwrap();
+                action.sign(sighash, &ask, rng).unwrap();
 
                 // We can also apply the signature as an external signature.
                 let signature = action.spend().spend_auth_sig().clone().expect("signed");
@@ -764,7 +764,7 @@ mod tests {
 
         assert_eq!(bundle.value_balance(), &0);
         // We can successfully bind the bundle.
-        bundle.apply_binding_signature(sighash, &mut rng).unwrap();
+        bundle.apply_binding_signature(sighash, rng).unwrap();
     }
 
     #[test]
@@ -776,7 +776,7 @@ mod tests {
         pczt_bundle.actions_mut()[0].spend.rk = identity_rk();
 
         assert!(matches!(
-            pczt_bundle.create_proof(&pk, &mut rng),
+            pczt_bundle.create_proof(&pk, rng),
             Err(ProverError::IdentityRk),
         ));
     }
@@ -787,7 +787,7 @@ mod tests {
         let mut rng = OsRng;
 
         let mut pczt_bundle = minimal_finalized_pczt_bundle(&mut rng);
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         // Inject identity rk after a valid proof has been produced. Extract
         // should reject at the `Action::from_parts` step, before any proof or
@@ -806,7 +806,7 @@ mod tests {
         let mut rng = OsRng;
 
         let mut pczt_bundle = minimal_finalized_pczt_bundle(&mut rng);
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         // Pad the proof with a trailing byte after it was produced. Extraction must reject the
         // non-canonical proof rather than carry it into the extracted (and later authorized)
@@ -852,12 +852,33 @@ mod tests {
         )
         .unwrap();
 
-        assert!(parsed.flags().cross_address_disabled());
+        assert!(parsed.flags().cross_address_enabled());
         assert_eq!(
             parsed.flags().to_byte(BundleFormat::Nu6_3),
             Some(0b0000_0100)
         );
-        assert_eq!(parsed.flags().to_byte(BundleFormat::PreNu6_3), None);
+        assert_eq!(
+            parsed.flags().to_byte(BundleFormat::PreNu6_3),
+            Some(0b0000_0000)
+        );
+
+        let restricted = super::Bundle::parse(
+            vec![],
+            0b0000_0011,
+            BundleFormat::Nu6_3,
+            (0, false),
+            anchor.to_bytes(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(!restricted.flags().cross_address_enabled());
+        assert_eq!(
+            restricted.flags().to_byte(BundleFormat::Nu6_3),
+            Some(0b0000_0011)
+        );
+        assert_eq!(restricted.flags().to_byte(BundleFormat::PreNu6_3), None);
     }
 
     #[test]
@@ -876,20 +897,20 @@ mod tests {
             let mut mismatched_pczt_bundle = minimal_finalized_pczt_bundle(&mut rng);
             mismatched_pczt_bundle.flags = Flags::CROSS_ADDRESS_DISABLED;
             assert!(matches!(
-                mismatched_pczt_bundle.create_proof(&pk, &mut rng),
+                mismatched_pczt_bundle.create_proof(&pk, rng),
                 Err(ProverError::DisallowedCrossAddressTransfer),
             ));
         }
 
         let (mut pczt_bundle, bundle_meta, spend_ask, change_ask) =
             restricted_pczt_bundle(&mut rng);
-        pczt_bundle.finalize_io(sighash, &mut rng).unwrap();
+        pczt_bundle.finalize_io(sighash, rng).unwrap();
 
         // A pre-Ironwood proving key rejects the structurally-conforming restricted
         // statement at the instance check, leaving the bundle unmodified.
         let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
         assert!(matches!(
-            pczt_bundle.create_proof(&pk, &mut rng),
+            pczt_bundle.create_proof(&pk, rng),
             Err(ProverError::ProofFailed(
                 halo2_proofs::plonk::Error::InvalidInstances
             )),
@@ -899,20 +920,20 @@ mod tests {
         // An Ironwood proving key proves the same statement, and the proof verifies
         // in the extracted bundle under the Ironwood verifying key.
         let pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
-        pczt_bundle.create_proof(&pk, &mut rng).unwrap();
+        pczt_bundle.create_proof(&pk, rng).unwrap();
 
         pczt_bundle.actions_mut()[bundle_meta.spend_action_index(0).unwrap()]
-            .sign(sighash, &spend_ask, &mut rng)
+            .sign(sighash, &spend_ask, rng)
             .unwrap();
         pczt_bundle.actions_mut()[bundle_meta.output_action_index(0).unwrap()]
-            .sign(sighash, &change_ask, &mut rng)
+            .sign(sighash, &change_ask, rng)
             .unwrap();
 
         let bundle = pczt_bundle
             .extract::<i64>()
             .unwrap()
             .unwrap()
-            .apply_binding_signature(sighash, &mut rng)
+            .apply_binding_signature(sighash, rng)
             .unwrap();
         bundle
             .verify_proof(&VerifyingKey::build(OrchardCircuitVersion::Ironwood))
@@ -926,7 +947,7 @@ mod tests {
             restricted_pczt_bundle(&mut rng);
 
         let sighash = [0; 32];
-        pczt_bundle.finalize_io(sighash, &mut rng).unwrap();
+        pczt_bundle.finalize_io(sighash, rng).unwrap();
         pczt_bundle.verify_cross_address_restriction().unwrap();
 
         let spend_action_index = bundle_meta.spend_action_index(0).unwrap();
@@ -936,14 +957,14 @@ mod tests {
         // The fabricated change spend is wallet-controlled: it is signed through the
         // normal Signer flow, and only by the matching spend authorizing key.
         assert!(matches!(
-            pczt_bundle.actions_mut()[change_action_index].sign(sighash, &spend_ask, &mut rng),
+            pczt_bundle.actions_mut()[change_action_index].sign(sighash, &spend_ask, rng),
             Err(SignerError::WrongSpendAuthorizingKey),
         ));
         pczt_bundle.actions_mut()[change_action_index]
-            .sign(sighash, &change_ask, &mut rng)
+            .sign(sighash, &change_ask, rng)
             .unwrap();
         pczt_bundle.actions_mut()[spend_action_index]
-            .sign(sighash, &spend_ask, &mut rng)
+            .sign(sighash, &spend_ask, rng)
             .unwrap();
 
         for action in pczt_bundle.actions() {
@@ -984,7 +1005,7 @@ mod tests {
             .is_some());
 
         let sighash = [0; 32];
-        pczt_bundle.finalize_io(sighash, &mut rng).unwrap();
+        pczt_bundle.finalize_io(sighash, rng).unwrap();
 
         // The IO Finalizer signed the padding dummy spend and cleared its `dummy_sk`;
         // the real spend still needs its signature.
@@ -997,7 +1018,7 @@ mod tests {
             .is_none());
 
         pczt_bundle.actions_mut()[spend_action_index]
-            .sign(sighash, &SpendAuthorizingKey::from(&spend_sk), &mut rng)
+            .sign(sighash, &SpendAuthorizingKey::from(&spend_sk), rng)
             .unwrap();
     }
 
@@ -1017,7 +1038,7 @@ mod tests {
         pczt_bundle.actions_mut()[0].output.recipient = Some(other_recipient);
 
         assert!(matches!(
-            pczt_bundle.finalize_io([0; 32], &mut rng),
+            pczt_bundle.finalize_io([0; 32], rng),
             Err(IoFinalizerError::CrossAddressRestriction(
                 VerifyError::DisallowedCrossAddressTransfer
             )),
@@ -1065,6 +1086,6 @@ mod tests {
         pczt_bundle.flags = Flags::CROSS_ADDRESS_DISABLED;
 
         let bundle = pczt_bundle.extract::<i64>().unwrap().unwrap();
-        assert!(bundle.flags().cross_address_disabled());
+        assert!(!bundle.flags().cross_address_enabled());
     }
 }
