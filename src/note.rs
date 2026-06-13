@@ -414,6 +414,7 @@ impl Note {
     }
 
     /// Derives the note commitment trapdoor for this note.
+    #[cfg_attr(feature = "unstable-voting-circuits", visibility::make(pub))]
     pub(crate) fn rcm(&self) -> commitment::NoteCommitTrapdoor {
         let g_d = self.recipient.g_d();
         let pk_d = self.recipient.pk_d().inner();
