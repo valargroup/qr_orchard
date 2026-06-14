@@ -1132,7 +1132,16 @@ fn build_bundle<B, R: RngCore>(
     note_version: NoteVersion,
     finisher: impl FnOnce(Vec<ActionInfo>, Flags, ValueSum, BundleMetadata, R) -> Result<B, BuildError>,
 ) -> Result<B, BuildError> {
-    let flags = bundle_type.flags();
+    let flags = {
+        let flags = bundle_type.flags();
+        if !flags.cross_address_enabled() && outputs.is_empty() {
+            // Spend-only withdrawals have no real Orchard outputs to constrain.
+            // Use the legacy-encodable output-disabled form instead.
+            Flags::OUTPUTS_DISABLED
+        } else {
+            flags
+        }
+    };
 
     let num_requested_spends = spends.len();
     if !flags.spends_enabled() && num_requested_spends > 0 {
@@ -1909,6 +1918,35 @@ mod tests {
                 .unwrap()
                 .same_receiver(action.output.recipient.as_ref().unwrap()));
         }
+    }
+
+    #[test]
+    fn cross_address_disabled_spend_only_uses_output_disabled_flags() {
+        let mut rng = OsRng;
+        let spend_sk = SpendingKey::random(&mut rng);
+        let spend_fvk = FullViewingKey::from(&spend_sk);
+        let spend_recipient = spend_fvk.address_at(0u32, Scope::External);
+        let (note, merkle_path, anchor) =
+            note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
+
+        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+        builder
+            .add_spend(spend_fvk.clone(), note, merkle_path)
+            .unwrap();
+        let balance: i64 = builder.value_balance().unwrap();
+        assert_eq!(balance, 15_000);
+
+        let (pczt_bundle, bundle_meta) = builder.build_for_pczt(&mut rng).unwrap();
+        assert!(pczt_bundle.flags().spends_enabled());
+        assert!(!pczt_bundle.flags().outputs_enabled());
+        assert!(pczt_bundle.flags().cross_address_enabled());
+        assert_eq!(
+            pczt_bundle.flags().to_byte(BundleFormat::PreNu6_3),
+            Some(0b0000_0001)
+        );
+        assert_eq!(pczt_bundle.actions().len(), 2);
+        assert_eq!(i64::try_from(pczt_bundle.value_sum).unwrap(), 15_000);
+        assert!(bundle_meta.spend_action_index(0).is_some());
     }
 
     #[test]
