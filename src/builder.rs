@@ -38,8 +38,8 @@ const MIN_ACTIONS: usize = 2;
 /// An enumeration of rules for Orchard bundle construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BundleType {
-    /// A transactional bundle will be padded if necessary to contain at least 2 actions,
-    /// irrespective of whether any genuine actions are required.
+    /// Unless no bundle is required and no genuine actions were requested, a
+    /// transactional bundle will be padded if necessary to contain at least 2 actions.
     Transactional {
         /// The flags used for the bundle, including whether spends and outputs are enabled.
         flags: Flags,
@@ -79,6 +79,9 @@ impl BundleType {
     /// actions is `num_spends + num_outputs` rather than `max(num_spends, num_outputs)`.
     /// Wallets estimating fees (e.g. per [ZIP 317]) must account for this larger action
     /// count.
+    ///
+    /// Once the requested count is computed, transactional bundles return at least
+    /// 2 actions whenever a bundle is required or any requested actions are present.
     ///
     /// Returns an error if the specified number of spends and outputs is incompatible with
     /// this bundle type.

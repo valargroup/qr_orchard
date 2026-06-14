@@ -228,12 +228,16 @@ impl BundleProtocol {
     ///
     /// For [`BundleProtocol::LegacyOrchard`] and [`BundleProtocol::Ironwood`],
     /// cross-address transfers are enabled, so requested spends and outputs can
-    /// share actions. The requested action count is therefore
-    /// `max(num_spends, num_outputs)`.
+    /// share actions. Before transactional padding is applied, the requested
+    /// action count is therefore `max(num_spends, num_outputs)`. The returned
+    /// count for a nonempty transactional bundle is
+    /// `max(2, max(num_spends, num_outputs))`.
     ///
     /// For [`BundleProtocol::Orchard`], cross-address transfers are disabled, so a
-    /// requested spend and a requested output cannot share an action. The requested
-    /// action count is therefore `num_spends + num_outputs`.
+    /// requested spend and a requested output cannot share an action. Before
+    /// transactional padding is applied, the requested action count is therefore
+    /// `num_spends + num_outputs`. The returned count for a nonempty
+    /// transactional bundle is `max(2, num_spends + num_outputs)`.
     ///
     /// [`Builder::new`]: crate::builder::Builder::new
     pub fn transactional_action_count(
