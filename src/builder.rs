@@ -750,7 +750,8 @@ impl Builder {
     ///
     /// Uses the note version determined by the [`BundleProtocol`] passed to
     /// [`Builder::new`] or [`Builder::new_coinbase`] — [`NoteVersion::V2`] for
-    /// [`BundleProtocol::Orchard`] and [`NoteVersion::V3`] for
+    /// [`BundleProtocol::LegacyOrchard`] and [`BundleProtocol::Orchard`], and
+    /// [`NoteVersion::V3`] for
     /// [`BundleProtocol::Ironwood`]. Use [`Builder::add_output_with_version`] to
     /// override the note version explicitly.
     ///

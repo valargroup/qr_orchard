@@ -8,18 +8,22 @@ and this project adheres to Rust's notion of
 ## [Unreleased]
 
 All changes in this release support the NU6.3 `enableCrossAddress` bundle
-flag, the Ironwood Orchard Action circuit that enforces the cross-address restriction, and QR note
-plaintext version support. Callers targeting the existing Orchard pool pass
-`BundleProtocol::Orchard` to builder APIs; callers targeting the new Ironwood
-QR pool pass `BundleProtocol::Ironwood`. Low-level APIs that parse or serialize
-bundles take a `BundleFormat` selecting the pre-NU6.3 or NU6.3 flag-byte
-encoding.
+flag, the Ironwood Orchard Action circuit that enforces the cross-address
+restriction, and QR note plaintext version support. Callers targeting existing
+v5 Orchard transactions pass `BundleProtocol::LegacyOrchard` to builder APIs;
+callers targeting Orchard with NU6.3 bundle rules pass `BundleProtocol::Orchard`;
+callers targeting the new Ironwood QR pool pass `BundleProtocol::Ironwood`.
+Low-level APIs that parse or serialize bundles take a `BundleFormat` selecting
+the pre-NU6.3 or NU6.3 flag-byte encoding.
 
 ### Added
 - `orchard::BundleProtocol`, a single enum that encodes the correlated
   protocol choices — circuit version, flag-byte format, default note version,
   and transactional `Flags` — that previously had to be passed separately at
-  construction, build, and serialization time. One variant per pool:
+  construction, build, and serialization time. The variants are:
+  - `BundleProtocol::LegacyOrchard` — fixed post-NU6.2 circuit, pre-NU6.3
+    format, transactional `enableCrossAddress = 1` (V2 notes). Use this for
+    existing v5 Orchard transactions.
   - `BundleProtocol::Orchard` — Ironwood circuit, NU6.3 format,
     transactional `enableCrossAddress = 0` (V2 notes). Cross-address
     transfers in transactional bundles are prohibited by consensus in this pool.
@@ -139,7 +143,8 @@ encoding.
   `orchard::builder::Builder::add_change_output` now produce notes at the
   note version determined by the [`BundleProtocol`] passed to [`Builder::new`]
   or [`Builder::new_coinbase`] — [`NoteVersion::V2`] for
-  [`BundleProtocol::Orchard`] and [`NoteVersion::V3`] for
+  [`BundleProtocol::LegacyOrchard`] and [`BundleProtocol::Orchard`], and
+  [`NoteVersion::V3`] for
   [`BundleProtocol::Ironwood`]. Previously both methods hard-coded
   `NoteVersion::DEFAULT` (`V2`) regardless of pool. Use
   [`Builder::add_output_with_version`] to override explicitly.

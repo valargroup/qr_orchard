@@ -160,6 +160,47 @@ fn builder_builds_for_ironwood_circuit_version() {
 }
 
 #[test]
+fn builder_builds_for_legacy_orchard_protocol() {
+    let mut rng = OsRng;
+    let fixed_pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+    let fixed_vk = VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
+    let ironwood_vk = VerifyingKey::build(OrchardCircuitVersion::Ironwood);
+
+    let sk = SpendingKey::from_bytes([0; 32]).unwrap();
+    let fvk = FullViewingKey::from(&sk);
+    let recipient = fvk.address_at(0u32, Scope::External);
+
+    let builder = output_only_builder(BundleProtocol::LegacyOrchard, recipient);
+
+    let (unauthorized, bundle_meta) = builder.build::<i64>(&mut rng).unwrap().unwrap();
+    assert_eq!(
+        unauthorized.circuit_version(),
+        OrchardCircuitVersion::FixedPostNu6_2
+    );
+    assert!(unauthorized.flags().spends_enabled());
+    assert!(unauthorized.flags().outputs_enabled());
+    assert!(unauthorized.flags().cross_address_enabled());
+    assert_eq!(
+        unauthorized
+            .decrypt_output_with_key(
+                bundle_meta
+                    .output_action_index(0)
+                    .expect("Output 0 can be found"),
+                &fvk.to_ivk(Scope::External),
+            )
+            .map(|(note, _, _)| (note.value(), note.version())),
+        Some((NoteValue::from_raw(5000), NoteVersion::V2))
+    );
+
+    let sighash: [u8; 32] = unauthorized.commitment(BundleFormat::PreNu6_3).into();
+    let proven = unauthorized.create_proof(&fixed_pk, &mut rng).unwrap();
+    let bundle = proven.apply_signatures(rng, sighash, &[]).unwrap();
+
+    verify_bundle(&bundle, &fixed_vk, BundleFormat::PreNu6_3);
+    assert!(bundle.verify_proof(&ironwood_vk).is_err());
+}
+
+#[test]
 fn builder_builds_for_orchard_protocol() {
     let mut rng = OsRng;
     let ironwood_pk = ProvingKey::build(OrchardCircuitVersion::Ironwood);
