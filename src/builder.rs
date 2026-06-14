@@ -705,6 +705,26 @@ impl Builder {
         }
     }
 
+    /// Returns the protocol currently used by this builder.
+    pub fn protocol(&self) -> BundleProtocol {
+        self.protocol
+    }
+
+    /// Updates the protocol used by this builder.
+    ///
+    /// This changes the circuit version, bundle flag format, and transactional
+    /// flags used when the bundle is built. Outputs that were already added
+    /// keep their explicitly chosen note version; callers should therefore use
+    /// this before adding outputs when switching between protocols with
+    /// different default note versions.
+    pub fn set_protocol(&mut self, protocol: BundleProtocol) {
+        if let BundleType::Transactional { flags, .. } = &mut self.bundle_type {
+            *flags = protocol.flags();
+        }
+
+        self.protocol = protocol;
+    }
+
     /// Adds a note to be spent in this transaction.
     ///
     /// - `note` is a spendable note, obtained by trial-decrypting an [`Action`] using the
@@ -1797,6 +1817,32 @@ mod tests {
             .add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512])
             .expect("output-only builders accept ordinary outputs");
         builder
+    }
+
+    #[test]
+    fn set_protocol_updates_transactional_flags() {
+        let mut rng = OsRng;
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let recipient = fvk.address_at(0u32, Scope::External);
+        let mut builder = Builder::new(
+            BundleProtocol::LegacyOrchard,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
+
+        assert_eq!(builder.protocol(), BundleProtocol::LegacyOrchard);
+        builder.set_protocol(BundleProtocol::Orchard);
+        assert_eq!(builder.protocol(), BundleProtocol::Orchard);
+        assert_eq!(
+            builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
+            Err(OutputError::CrossAddressDisabled)
+        );
+
+        builder.set_protocol(BundleProtocol::LegacyOrchard);
+        assert_eq!(builder.protocol(), BundleProtocol::LegacyOrchard);
+        builder
+            .add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512])
+            .expect("legacy Orchard permits ordinary outputs");
     }
 
     #[test]

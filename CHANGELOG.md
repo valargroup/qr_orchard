@@ -87,6 +87,9 @@ the pre-NU6.3 or NU6.3 flag-byte encoding.
   - `orchard::builder::OutputInfo::change` — now takes an explicit
     `NoteVersion`; use [`Builder::add_change_output`] to have the version
     derived automatically from the [`BundleProtocol`].
+- `orchard::builder::Builder::protocol` and
+  `orchard::builder::Builder::set_protocol`, for callers that choose the
+  effective transaction format after constructing a builder.
 - `orchard::pczt::Bundle::verify_cross_address_restriction`, so that Signers
   can check the cross-address restriction's same-receiver structural property
   before signing. It is a no-op for bundles that permit cross-address
