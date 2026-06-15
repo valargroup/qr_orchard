@@ -103,23 +103,31 @@ pub enum BundleFormat {
 /// separately — circuit version, flag-byte format, default note version, and
 /// the cross-address policy for transactional bundles — as a single value.
 ///
-/// Both variants use [`OrchardCircuitVersion::Ironwood`] and [`BundleFormat::Nu6_3`].
-/// They differ on transactional [`Flags`] and default note version:
+/// The variants differ on circuit version, flag-byte format, transactional
+/// [`Flags`], and default note version:
 ///
-/// | Pool | `enableCrossAddress` | Note version | Cross-address transfers |
-/// |------|----------------------|--------------|-------------------------|
-/// | [`Orchard`] | `0` (disabled) | V2 | Prohibited by consensus |
-/// | [`Ironwood`] | `1` | V3 (ZIP 2005 QR) | Permitted |
+/// | Protocol | Circuit version | Bundle format | `enableCrossAddress` | Note version | Cross-address transfers |
+/// |----------|-----------------|---------------|----------------------|--------------|-------------------------|
+/// | [`LegacyOrchard`] | Fixed post-NU6.2 | Pre-NU6.3 | `1` | V2 | Permitted |
+/// | [`Orchard`] | Ironwood | NU6.3 | `0` (disabled) | V2 | Prohibited by consensus |
+/// | [`Ironwood`] | Ironwood | NU6.3 | `1` | V3 (ZIP 2005 QR) | Permitted |
 ///
 /// Coinbase bundles use the protocol for circuit selection and default note
 /// version. Their flags are fixed to spends disabled, outputs enabled, and
 /// cross-address transfers enabled.
 ///
+/// [`LegacyOrchard`]: BundleProtocol::LegacyOrchard
 /// [`Orchard`]: BundleProtocol::Orchard
 /// [`Ironwood`]: BundleProtocol::Ironwood
 /// [`OrchardCircuitVersion::Ironwood`]: crate::circuit::OrchardCircuitVersion::Ironwood
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BundleProtocol {
+    /// The Orchard pool before NU6.3 bundle flag semantics.
+    ///
+    /// Uses the post-NU6.2 fixed Orchard circuit and pre-NU6.3 flag-byte format.
+    /// Cross-address transfers are permitted and notes use the V2 (ZIP 212)
+    /// plaintext format.
+    LegacyOrchard,
     /// The Orchard pool at NU6.3+.
     ///
     /// Uses the Ironwood circuit and NU6.3 flag-byte format.
@@ -153,29 +161,42 @@ pub enum BundleProtocol {
 impl BundleProtocol {
     /// Returns the [`OrchardCircuitVersion`] for this pool.
     ///
-    /// Both pools use [`OrchardCircuitVersion::Ironwood`].
+    /// The legacy Orchard pool uses [`OrchardCircuitVersion::FixedPostNu6_2`].
+    /// Orchard and Ironwood under NU6.3 use [`OrchardCircuitVersion::Ironwood`].
     ///
     /// [`OrchardCircuitVersion`]: crate::circuit::OrchardCircuitVersion
+    /// [`OrchardCircuitVersion::FixedPostNu6_2`]: crate::circuit::OrchardCircuitVersion::FixedPostNu6_2
     /// [`OrchardCircuitVersion::Ironwood`]: crate::circuit::OrchardCircuitVersion::Ironwood
     pub fn circuit_version(self) -> crate::circuit::OrchardCircuitVersion {
-        crate::circuit::OrchardCircuitVersion::Ironwood
+        match self {
+            BundleProtocol::LegacyOrchard => crate::circuit::OrchardCircuitVersion::FixedPostNu6_2,
+            BundleProtocol::Orchard | BundleProtocol::Ironwood => {
+                crate::circuit::OrchardCircuitVersion::Ironwood
+            }
+        }
     }
 }
 
 impl BundleProtocol {
     /// Returns the [`BundleFormat`] for this pool.
     ///
-    /// All variants use [`BundleFormat::Nu6_3`].
+    /// `LegacyOrchard` uses [`BundleFormat::PreNu6_3`]. `Orchard` and
+    /// `Ironwood` use [`BundleFormat::Nu6_3`].
     pub fn bundle_format(self) -> BundleFormat {
-        BundleFormat::Nu6_3
+        match self {
+            BundleProtocol::LegacyOrchard => BundleFormat::PreNu6_3,
+            BundleProtocol::Orchard | BundleProtocol::Ironwood => BundleFormat::Nu6_3,
+        }
     }
 
     /// Returns the [`Flags`] for this pool.
     ///
+    /// - [`BundleProtocol::LegacyOrchard`][]: [`Flags::ENABLED`]
     /// - [`BundleProtocol::Orchard`][]: [`Flags::CROSS_ADDRESS_DISABLED`]
     /// - [`BundleProtocol::Ironwood`][]: [`Flags::ENABLED`]
     pub fn flags(self) -> Flags {
         match self {
+            BundleProtocol::LegacyOrchard => Flags::ENABLED,
             BundleProtocol::Orchard => Flags::CROSS_ADDRESS_DISABLED,
             BundleProtocol::Ironwood => Flags::ENABLED,
         }
@@ -183,6 +204,7 @@ impl BundleProtocol {
 
     /// Returns the default [`NoteVersion`] for notes created in this pool.
     ///
+    /// - [`BundleProtocol::LegacyOrchard`][]: [`NoteVersion::V2`]
     /// - [`BundleProtocol::Orchard`][]: [`NoteVersion::V2`]
     /// - [`BundleProtocol::Ironwood`][]: [`NoteVersion::V3`]
     ///
@@ -191,7 +213,7 @@ impl BundleProtocol {
     /// [`NoteVersion::V3`]: crate::note::NoteVersion::V3
     pub fn default_note_version(self) -> crate::note::NoteVersion {
         match self {
-            BundleProtocol::Orchard => crate::note::NoteVersion::V2,
+            BundleProtocol::LegacyOrchard | BundleProtocol::Orchard => crate::note::NoteVersion::V2,
             BundleProtocol::Ironwood => crate::note::NoteVersion::V3,
         }
     }
@@ -204,13 +226,18 @@ impl BundleProtocol {
     /// zero actions unless the builder is explicitly required to produce a dummy-only
     /// bundle.
     ///
-    /// For [`BundleProtocol::Orchard`], cross-address transfers are disabled, so a
-    /// requested spend and a requested output cannot share an action. The requested
-    /// action count is therefore `num_spends + num_outputs`.
+    /// For [`BundleProtocol::LegacyOrchard`] and [`BundleProtocol::Ironwood`],
+    /// cross-address transfers are enabled, so requested spends and outputs can
+    /// share actions. Before transactional padding is applied, the requested
+    /// action count is therefore `max(num_spends, num_outputs)`. The returned
+    /// count for a nonempty transactional bundle is
+    /// `max(2, max(num_spends, num_outputs))`.
     ///
-    /// For [`BundleProtocol::Ironwood`], cross-address transfers are enabled, so
-    /// requested spends and outputs can share actions. The requested action count is
-    /// therefore `max(num_spends, num_outputs)`.
+    /// For [`BundleProtocol::Orchard`], cross-address transfers are disabled, so a
+    /// requested spend and a requested output cannot share an action. Before
+    /// transactional padding is applied, the requested action count is therefore
+    /// `num_spends + num_outputs`. The returned count for a nonempty
+    /// transactional bundle is `max(2, num_spends + num_outputs)`.
     ///
     /// [`Builder::new`]: crate::builder::Builder::new
     pub fn transactional_action_count(
@@ -400,8 +427,7 @@ impl Flags {
     ///
     /// Delegates to [`Flags::to_byte`] with the protocol's [`BundleFormat`].
     /// Returns `None` if this flag set cannot be encoded in the protocol's format
-    /// (e.g. cross-address transfers disabled for a pre-NU6.3 format, though neither
-    /// current protocol variant uses pre-NU6.3).
+    /// (e.g. cross-address transfers disabled for a pre-NU6.3 format).
     pub fn to_byte_for_protocol(&self, protocol: BundleProtocol) -> Option<u8> {
         self.to_byte(protocol.bundle_format())
     }
@@ -1125,6 +1151,27 @@ pub(crate) mod tests {
     #[test]
     fn transactional_action_count_matches_protocol_rules() {
         assert_eq!(
+            BundleProtocol::LegacyOrchard.transactional_action_count(0, 0),
+            Ok(0)
+        );
+        assert_eq!(
+            BundleProtocol::LegacyOrchard.transactional_action_count(1, 0),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::LegacyOrchard.transactional_action_count(0, 1),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::LegacyOrchard.transactional_action_count(1, 1),
+            Ok(2)
+        );
+        assert_eq!(
+            BundleProtocol::LegacyOrchard.transactional_action_count(3, 2),
+            Ok(3)
+        );
+
+        assert_eq!(
             BundleProtocol::Orchard.transactional_action_count(0, 0),
             Ok(0)
         );
@@ -1173,7 +1220,11 @@ pub(crate) mod tests {
 
     #[test]
     fn coinbase_action_count_is_not_padded() {
-        for protocol in [BundleProtocol::Orchard, BundleProtocol::Ironwood] {
+        for protocol in [
+            BundleProtocol::LegacyOrchard,
+            BundleProtocol::Orchard,
+            BundleProtocol::Ironwood,
+        ] {
             assert_eq!(protocol.coinbase_action_count(0), 0);
             assert_eq!(protocol.coinbase_action_count(1), 1);
             assert_eq!(protocol.coinbase_action_count(3), 3);

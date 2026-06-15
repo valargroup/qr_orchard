@@ -38,8 +38,8 @@ const MIN_ACTIONS: usize = 2;
 /// An enumeration of rules for Orchard bundle construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BundleType {
-    /// A transactional bundle will be padded if necessary to contain at least 2 actions,
-    /// irrespective of whether any genuine actions are required.
+    /// Unless no bundle is required and no genuine actions were requested, a
+    /// transactional bundle will be padded if necessary to contain at least 2 actions.
     Transactional {
         /// The flags used for the bundle, including whether spends and outputs are enabled.
         flags: Flags,
@@ -79,6 +79,9 @@ impl BundleType {
     /// actions is `num_spends + num_outputs` rather than `max(num_spends, num_outputs)`.
     /// Wallets estimating fees (e.g. per [ZIP 317]) must account for this larger action
     /// count.
+    ///
+    /// Once the requested count is computed, transactional bundles return at least
+    /// 2 actions whenever a bundle is required or any requested actions are present.
     ///
     /// Returns an error if the specified number of spends and outputs is incompatible with
     /// this bundle type.
@@ -705,6 +708,26 @@ impl Builder {
         }
     }
 
+    /// Returns the protocol currently used by this builder.
+    pub fn protocol(&self) -> BundleProtocol {
+        self.protocol
+    }
+
+    /// Updates the protocol used by this builder.
+    ///
+    /// This changes the circuit version, bundle flag format, and transactional
+    /// flags used when the bundle is built. Outputs that were already added
+    /// keep their explicitly chosen note version; callers should therefore use
+    /// this before adding outputs when switching between protocols with
+    /// different default note versions.
+    pub fn set_protocol(&mut self, protocol: BundleProtocol) {
+        if let BundleType::Transactional { flags, .. } = &mut self.bundle_type {
+            *flags = protocol.flags();
+        }
+
+        self.protocol = protocol;
+    }
+
     /// Adds a note to be spent in this transaction.
     ///
     /// - `note` is a spendable note, obtained by trial-decrypting an [`Action`] using the
@@ -750,7 +773,8 @@ impl Builder {
     ///
     /// Uses the note version determined by the [`BundleProtocol`] passed to
     /// [`Builder::new`] or [`Builder::new_coinbase`] — [`NoteVersion::V2`] for
-    /// [`BundleProtocol::Orchard`] and [`NoteVersion::V3`] for
+    /// [`BundleProtocol::LegacyOrchard`] and [`BundleProtocol::Orchard`], and
+    /// [`NoteVersion::V3`] for
     /// [`BundleProtocol::Ironwood`]. Use [`Builder::add_output_with_version`] to
     /// override the note version explicitly.
     ///
@@ -1796,6 +1820,32 @@ mod tests {
             .add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512])
             .expect("output-only builders accept ordinary outputs");
         builder
+    }
+
+    #[test]
+    fn set_protocol_updates_transactional_flags() {
+        let mut rng = OsRng;
+        let sk = SpendingKey::random(&mut rng);
+        let fvk = FullViewingKey::from(&sk);
+        let recipient = fvk.address_at(0u32, Scope::External);
+        let mut builder = Builder::new(
+            BundleProtocol::LegacyOrchard,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
+
+        assert_eq!(builder.protocol(), BundleProtocol::LegacyOrchard);
+        builder.set_protocol(BundleProtocol::Orchard);
+        assert_eq!(builder.protocol(), BundleProtocol::Orchard);
+        assert_eq!(
+            builder.add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512]),
+            Err(OutputError::CrossAddressDisabled)
+        );
+
+        builder.set_protocol(BundleProtocol::LegacyOrchard);
+        assert_eq!(builder.protocol(), BundleProtocol::LegacyOrchard);
+        builder
+            .add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512])
+            .expect("legacy Orchard permits ordinary outputs");
     }
 
     #[test]
