@@ -34,6 +34,9 @@ the pre-NU6.3 or NU6.3 flag-byte encoding.
   `orchard::BundleProtocol::coinbase_action_count`, which let downstream fee
   estimators and input selectors compute the number of actions a protocol
   builder will produce without depending on internal bundle construction types.
+- `orchard::BundleProtocol::num_actions`, a compatibility alias for
+  `transactional_action_count` that keeps downstream transactional action count
+  call sites concise while `BundleType` remains internal.
 - `orchard::BundleActionCountError`, the error returned when an action count
   cannot be computed from the requested spend and output counts.
 - `orchard::builder::Builder::new_coinbase`, a dedicated constructor for

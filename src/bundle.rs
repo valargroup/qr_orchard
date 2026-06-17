@@ -252,6 +252,21 @@ impl BundleProtocol {
         .num_actions(num_spends, num_outputs)
     }
 
+    /// Compatibility alias for [`BundleProtocol::transactional_action_count`].
+    ///
+    /// This matches the old caller-facing action count method name while
+    /// preserving the [`BundleProtocol`] API. Callers that need to distinguish
+    /// transactional and coinbase builders can use
+    /// [`BundleProtocol::transactional_action_count`] and
+    /// [`BundleProtocol::coinbase_action_count`] directly.
+    pub fn num_actions(
+        self,
+        num_spends: usize,
+        num_outputs: usize,
+    ) -> Result<usize, BundleActionCountError> {
+        self.transactional_action_count(num_spends, num_outputs)
+    }
+
     /// Returns the number of actions that [`Builder::new_coinbase`] will produce
     /// after adding `num_outputs` outputs.
     ///
@@ -1216,6 +1231,22 @@ pub(crate) mod tests {
             BundleProtocol::Ironwood.transactional_action_count(3, 2),
             Ok(3)
         );
+    }
+
+    #[test]
+    fn num_actions_aliases_transactional_action_count() {
+        for protocol in [
+            BundleProtocol::LegacyOrchard,
+            BundleProtocol::Orchard,
+            BundleProtocol::Ironwood,
+        ] {
+            for (num_spends, num_outputs) in [(0, 0), (1, 0), (0, 1), (1, 1), (2, 1)] {
+                assert_eq!(
+                    protocol.num_actions(num_spends, num_outputs),
+                    protocol.transactional_action_count(num_spends, num_outputs)
+                );
+            }
+        }
     }
 
     #[test]
