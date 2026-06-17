@@ -297,6 +297,31 @@ impl Note {
         CtOption::new(note, note.commitment_inner().is_some())
     }
 
+    /// Creates a V2 (ZIP 212) `Note` from its component parts.
+    ///
+    /// This is equivalent to calling [`Note::from_parts`] with
+    /// [`NoteVersion::V2`].
+    ///
+    /// Returns `None` if a valid [`NoteCommitment`] cannot be derived from the
+    /// note.
+    ///
+    /// # Caveats
+    ///
+    /// This has the same caveats as [`Note::from_parts`]. It should only be
+    /// called with note components that have been fully validated by decrypting a
+    /// received note according to [Section 4.19] of the Zcash Protocol
+    /// Specification.
+    ///
+    /// [Section 4.19]: https://zips.z.cash/protocol/protocol.pdf#saplingandorchardinband
+    pub fn from_v2_parts(
+        recipient: Address,
+        value: NoteValue,
+        rho: Rho,
+        rseed: RandomSeed,
+    ) -> CtOption<Self> {
+        Self::from_parts(recipient, value, rho, rseed, NoteVersion::V2)
+    }
+
     /// Generates a new note.
     ///
     /// Defined in [Zcash Protocol Spec § 4.7.3: Sending Notes (Orchard)][orchardsend].
@@ -586,5 +611,21 @@ mod tests {
                 "vector {i}: cmx_qr mismatch"
             );
         }
+    }
+
+    #[test]
+    fn from_v2_parts_matches_explicit_note_version() {
+        let tv = &crate::test_vectors::keys::test_vectors()[0];
+        let sk = SpendingKey::from_bytes(tv.sk).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let addr = fvk.address_at(0u32, Scope::External);
+        let rho = Rho::from_bytes(&tv.note_rho).unwrap();
+        let rseed = RandomSeed::from_bytes(tv.note_rseed, &rho).unwrap();
+        let value = NoteValue::from_raw(tv.note_v);
+
+        let helper_note = Note::from_v2_parts(addr, value, rho, rseed).unwrap();
+        let explicit_note = Note::from_parts(addr, value, rho, rseed, NoteVersion::V2).unwrap();
+
+        assert_eq!(helper_note, explicit_note);
     }
 }

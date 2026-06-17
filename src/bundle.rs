@@ -21,7 +21,10 @@ use memuse::DynamicUsage;
 use crate::{
     action::Action,
     address::Address,
-    bundle::commitments::{hash_bundle_auth_data, hash_bundle_txid_data},
+    bundle::commitments::{
+        hash_bundle_auth_data, hash_bundle_auth_data_with_domain, hash_bundle_txid_data,
+        hash_bundle_txid_data_with_domain, BundleCommitmentDomain,
+    },
     keys::{IncomingViewingKey, OutgoingViewingKey, PreparedIncomingViewingKey},
     note::Note,
     note_encryption::OrchardDomain,
@@ -43,19 +46,22 @@ pub enum BundleActionCountError {
     OutputsDisabled,
 }
 
-impl fmt::Display for BundleActionCountError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl BundleActionCountError {
+    /// Returns a static error message for this action count error.
+    pub const fn as_static_str(self) -> &'static str {
         match self {
             BundleActionCountError::InputCountOverflow => {
-                f.write_str("Requested spend and output counts overflowed.")
+                "Requested spend and output counts overflowed."
             }
-            BundleActionCountError::SpendsDisabled => {
-                f.write_str("Spends are disabled for this bundle.")
-            }
-            BundleActionCountError::OutputsDisabled => {
-                f.write_str("Outputs are disabled for this bundle.")
-            }
+            BundleActionCountError::SpendsDisabled => "Spends are disabled for this bundle.",
+            BundleActionCountError::OutputsDisabled => "Outputs are disabled for this bundle.",
         }
+    }
+}
+
+impl fmt::Display for BundleActionCountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_static_str())
     }
 }
 
@@ -182,7 +188,7 @@ impl BundleProtocol {
     ///
     /// `LegacyOrchard` uses [`BundleFormat::PreNu6_3`]. `Orchard` and
     /// `Ironwood` use [`BundleFormat::Nu6_3`].
-    pub fn bundle_format(self) -> BundleFormat {
+    pub const fn bundle_format(self) -> BundleFormat {
         match self {
             BundleProtocol::LegacyOrchard => BundleFormat::PreNu6_3,
             BundleProtocol::Orchard | BundleProtocol::Ironwood => BundleFormat::Nu6_3,
@@ -436,6 +442,14 @@ impl Flags {
         } else {
             None
         }
+    }
+
+    /// Serializes flags to a byte for the pre-NU6.3 Orchard flag format.
+    ///
+    /// Returns `None` if cross-address transfers are disabled, because that flag
+    /// set is not representable in the legacy format.
+    pub fn to_legacy_byte(&self) -> Option<u8> {
+        self.to_byte(BundleFormat::PreNu6_3)
     }
 
     /// Serializes flags to a byte for the given [`BundleProtocol`].
@@ -736,6 +750,19 @@ impl<T: Authorization, V: Copy + Into<i64>> Bundle<T, V> {
         BundleCommitment(hash_bundle_txid_data(self, format))
     }
 
+    /// Computes a commitment to the effects of this bundle under the specified
+    /// bundle commitment domain.
+    ///
+    /// This is useful for callers that need the same Orchard action commitment
+    /// structure with different personalization strings or anchor placement.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the flags cannot be encoded in the domain's [`BundleFormat`].
+    pub fn commitment_for_domain(&self, domain: BundleCommitmentDomain) -> BundleCommitment {
+        BundleCommitment(hash_bundle_txid_data_with_domain(self, domain))
+    }
+
     /// Returns the transaction binding validating key for this bundle.
     ///
     /// This can be used to validate the [`Authorized::binding_signature`] returned from
@@ -887,6 +914,15 @@ impl<V> Bundle<Authorized, V> {
     /// This together with `Bundle::commitment` bind the entire bundle.
     pub fn authorizing_commitment(&self) -> BundleAuthorizingCommitment {
         BundleAuthorizingCommitment(hash_bundle_auth_data(self))
+    }
+
+    /// Computes a commitment to the authorizing data within this bundle under
+    /// the specified bundle commitment domain.
+    pub fn authorizing_commitment_for_domain(
+        &self,
+        domain: BundleCommitmentDomain,
+    ) -> BundleAuthorizingCommitment {
+        BundleAuthorizingCommitment(hash_bundle_auth_data_with_domain(self, domain))
     }
 
     /// Verifies the proof for this bundle.
@@ -1123,7 +1159,7 @@ pub mod testing {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use alloc::vec;
+    use alloc::{string::ToString, vec};
 
     use proptest::prelude::*;
 
@@ -1132,7 +1168,15 @@ pub(crate) mod tests {
         Authorized, Bundle, BundleActionCountError, BundleError, BundleFormat, BundleProtocol,
         Flags,
     };
-    use crate::Proof;
+    use crate::{
+        bundle::commitments::{
+            hash_bundle_auth_empty, hash_bundle_auth_empty_with_domain, hash_bundle_txid_empty,
+            hash_bundle_txid_empty_with_domain, AnchorCommitment, BundleCommitmentDomain,
+        },
+        tree::Anchor,
+        Proof,
+    };
+    use pasta_curves::pallas;
 
     #[cfg(feature = "circuit")]
     pub(crate) fn with_cross_address_disabled(
@@ -1234,6 +1278,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn action_count_error_static_str_matches_display() {
+        for err in [
+            BundleActionCountError::InputCountOverflow,
+            BundleActionCountError::SpendsDisabled,
+            BundleActionCountError::OutputsDisabled,
+        ] {
+            assert_eq!(err.to_string(), err.as_static_str());
+        }
+    }
+
+    #[test]
     fn num_actions_aliases_transactional_action_count() {
         for protocol in [
             BundleProtocol::LegacyOrchard,
@@ -1275,6 +1330,49 @@ pub(crate) mod tests {
             assert_eq!(flags.to_byte(BundleFormat::PreNu6_3), pre_nu6_3);
             assert_eq!(flags.to_byte(BundleFormat::Nu6_3), nu6_3);
         }
+    }
+
+    #[test]
+    fn legacy_flag_byte_helper_delegates_to_pre_nu6_3_format() {
+        for (flags, expected) in [
+            (Flags::ENABLED, Some(0b011)),
+            (Flags::SPENDS_DISABLED, Some(0b010)),
+            (Flags::OUTPUTS_DISABLED, Some(0b001)),
+            (Flags::CROSS_ADDRESS_DISABLED, None),
+        ] {
+            assert_eq!(flags.to_legacy_byte(), expected);
+        }
+    }
+
+    #[test]
+    fn empty_domain_commitments_preserve_existing_orchard_values() {
+        let legacy_domain = BundleCommitmentDomain::from_protocol(
+            BundleProtocol::LegacyOrchard,
+            AnchorCommitment::Include,
+            AnchorCommitment::Omit,
+        );
+        let ironwood_domain = BundleCommitmentDomain::from_protocol(
+            BundleProtocol::Ironwood,
+            AnchorCommitment::Omit,
+            AnchorCommitment::Include,
+        );
+
+        assert_eq!(
+            hash_bundle_txid_empty(),
+            hash_bundle_txid_empty_with_domain(legacy_domain)
+        );
+        assert_eq!(
+            hash_bundle_auth_empty(),
+            hash_bundle_auth_empty_with_domain(legacy_domain)
+        );
+        assert_ne!(
+            hash_bundle_txid_empty_with_domain(legacy_domain),
+            hash_bundle_txid_empty_with_domain(ironwood_domain)
+        );
+        assert_ne!(
+            hash_bundle_auth_empty_with_domain(legacy_domain),
+            hash_bundle_auth_empty_with_domain(ironwood_domain)
+        );
     }
 
     #[test]
@@ -1399,6 +1497,66 @@ pub(crate) mod tests {
             prop_assert_ne!(restricted_commitment, unrestricted_commitment);
 
             prop_assert_eq!(restricted.flags().to_byte(BundleFormat::PreNu6_3), None);
+        }
+
+        #[test]
+        fn commitment_domains_control_anchor_placement(bundle in arb_bundle(3)) {
+            let alternate_anchor = if *bundle.anchor() == Anchor::empty_tree() {
+                Anchor::from(pallas::Base::from(1))
+            } else {
+                Anchor::empty_tree()
+            };
+
+            // Rebuild the bundle with `V = i64` so that `commitment_for_domain()` is available.
+            let bundle = Bundle::from_parts_unchecked(
+                bundle.actions().clone(),
+                *bundle.flags(),
+                0i64,
+                *bundle.anchor(),
+                bundle.authorization().clone(),
+            );
+            let alternate = Bundle::from_parts_unchecked(
+                bundle.actions().clone(),
+                *bundle.flags(),
+                *bundle.value_balance(),
+                alternate_anchor,
+                bundle.authorization().clone(),
+            );
+
+            let legacy_domain = BundleCommitmentDomain::from_protocol(
+                BundleProtocol::LegacyOrchard,
+                AnchorCommitment::Include,
+                AnchorCommitment::Omit,
+            );
+            let nu6_3_domain = BundleCommitmentDomain::from_protocol(
+                BundleProtocol::Orchard,
+                AnchorCommitment::Omit,
+                AnchorCommitment::Include,
+            );
+
+            let legacy_effects_commitment: [u8; 32] =
+                bundle.commitment_for_domain(legacy_domain).into();
+            let legacy_alternate_effects_commitment: [u8; 32] =
+                alternate.commitment_for_domain(legacy_domain).into();
+            prop_assert_ne!(legacy_effects_commitment, legacy_alternate_effects_commitment);
+
+            let legacy_auth_commitment = bundle.authorizing_commitment_for_domain(legacy_domain).0;
+            let legacy_alternate_auth_commitment = alternate
+                .authorizing_commitment_for_domain(legacy_domain)
+                .0;
+            prop_assert_eq!(legacy_auth_commitment, legacy_alternate_auth_commitment);
+
+            let nu6_3_effects_commitment: [u8; 32] =
+                bundle.commitment_for_domain(nu6_3_domain).into();
+            let nu6_3_alternate_effects_commitment: [u8; 32] =
+                alternate.commitment_for_domain(nu6_3_domain).into();
+            prop_assert_eq!(nu6_3_effects_commitment, nu6_3_alternate_effects_commitment);
+
+            let nu6_3_auth_commitment = bundle.authorizing_commitment_for_domain(nu6_3_domain).0;
+            let nu6_3_alternate_auth_commitment = alternate
+                .authorizing_commitment_for_domain(nu6_3_domain)
+                .0;
+            prop_assert_ne!(nu6_3_auth_commitment, nu6_3_alternate_auth_commitment);
         }
 
         #[test]

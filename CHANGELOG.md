@@ -39,6 +39,8 @@ the pre-NU6.3 or NU6.3 flag-byte encoding.
   call sites concise while `BundleType` remains internal.
 - `orchard::BundleActionCountError`, the error returned when an action count
   cannot be computed from the requested spend and output counts.
+- `orchard::BundleActionCountError::as_static_str`, for callers whose error
+  types store static strings.
 - `orchard::builder::Builder::new_coinbase`, a dedicated constructor for
   ZIP 213-style shielded coinbase bundles. It takes a [`BundleProtocol`] so
   callers can construct Orchard or Ironwood coinbase bundles. Downstream
@@ -71,10 +73,21 @@ the pre-NU6.3 or NU6.3 flag-byte encoding.
 - `orchard::bundle::Flags` APIs for the NU6.3 `enableCrossAddress` flag:
   - `Flags::CROSS_ADDRESS_DISABLED`
   - `Flags::cross_address_enabled`
+- `orchard::bundle::Flags::to_legacy_byte`, a compatibility helper for callers
+  serializing the pre-NU6.3 Orchard flag byte.
 - `orchard::bundle::BundleFormat`, selecting whether an Orchard bundle flag
   byte is interpreted under pre-NU6.3 transaction encoding rules (bit 2 is
   reserved and cross-address transfers are implicitly enabled) or NU6.3 rules
   (bit 2 is `enableCrossAddress`).
+- `orchard::bundle::commitments::BundleCommitmentDomain` and
+  `orchard::bundle::commitments::AnchorCommitment`, which let callers compute
+  Orchard-shaped bundle effects and authorizing commitments with protocol
+  personalizations and explicit anchor placement.
+- `orchard::Bundle::commitment_for_domain` and
+  `orchard::Bundle::authorizing_commitment_for_domain`, for computing bundle
+  commitments under a `BundleCommitmentDomain`.
+- `orchard::Note::from_v2_parts`, a compatibility constructor for ZIP 212 V2
+  notes.
 - `orchard::circuit::OrchardCircuitVersion::Ironwood`, the circuit version
   that enforces the `disableCrossAddress` public input (the negation of the
   bundle's `enableCrossAddress` flag). Ironwood has its own proving and
