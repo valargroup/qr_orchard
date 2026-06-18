@@ -96,34 +96,54 @@ pub enum BundleFormat {
     Nu6_3,
 }
 
-/// Selects the pool and circuit semantics for an Orchard bundle.
+/// Selects whether a builder creates a transaction bundle or a coinbase bundle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleKind {
+    /// A normal transaction bundle.
+    ///
+    /// Transaction bundles use the flags implied by the selected protocol and
+    /// are padded to at least two actions when nonempty.
+    Transaction,
+    /// A shielded coinbase bundle.
+    ///
+    /// Coinbase bundles disable spends, contain exactly the outputs added, and
+    /// are not padded to the transaction minimum action count.
+    Coinbase,
+}
+
+/// Selects the valid protocol and pool combination for a bundle.
 ///
 /// Encodes the correlated choices a caller would otherwise have to pass
-/// separately: circuit version, flag-byte format, default note version, and
-/// the cross-address policy for transactional bundles.
+/// separately: pool, circuit version, flag-byte format, default note version,
+/// and the cross-address policy for transaction bundles.
 ///
 /// Coinbase bundles use the protocol for circuit selection and default note
 /// version. Their flags are fixed to spends disabled, outputs enabled, and
 /// cross-address transfers enabled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BundleProtocol {
-    /// The Orchard pool before NU6.3 bundle flag semantics.
+    /// The Orchard pool before NU6.2.
+    ///
+    /// Uses the insecure historical Orchard circuit and pre-NU6.3 flag-byte format.
+    /// Cross-address transfers are permitted and notes use the V2 plaintext format.
+    OrchardPreNu6_2,
+    /// The Orchard pool from NU6.2 until NU6.3.
     ///
     /// Uses the post-NU6.2 fixed Orchard circuit and pre-NU6.3 flag-byte format.
     /// Cross-address transfers are permitted and notes use the V2 plaintext format.
-    LegacyOrchard,
+    OrchardPreNu6_3,
     /// The Orchard pool at NU6.3+.
     ///
     /// Uses the post-NU6.3 circuit and NU6.3 flag-byte format. For transactional
     /// bundles, `enableCrossAddress = 0` is required by consensus, so
     /// cross-address transfers are prohibited. Notes use V2 plaintexts.
-    Orchard,
-    /// The Ironwood pool.
+    OrchardPostNu6_3,
+    /// The Ironwood pool at NU6.3+.
     ///
     /// Uses the post-NU6.3 circuit and NU6.3 flag-byte format. Transactional
     /// bundles enable cross-address transfers. Notes use V3 quantum-recoverable
     /// plaintexts.
-    Ironwood,
+    IronwoodPostNu6_3,
 }
 
 #[cfg(feature = "circuit")]
@@ -133,8 +153,13 @@ impl BundleProtocol {
     /// [`OrchardCircuitVersion`]: crate::circuit::OrchardCircuitVersion
     pub fn circuit_version(self) -> crate::circuit::OrchardCircuitVersion {
         match self {
-            BundleProtocol::LegacyOrchard => crate::circuit::OrchardCircuitVersion::FixedPostNu6_2,
-            BundleProtocol::Orchard | BundleProtocol::Ironwood => {
+            BundleProtocol::OrchardPreNu6_2 => {
+                crate::circuit::OrchardCircuitVersion::InsecurePreNu6_2
+            }
+            BundleProtocol::OrchardPreNu6_3 => {
+                crate::circuit::OrchardCircuitVersion::FixedPostNu6_2
+            }
+            BundleProtocol::OrchardPostNu6_3 | BundleProtocol::IronwoodPostNu6_3 => {
                 crate::circuit::OrchardCircuitVersion::PostNu6_3
             }
         }
@@ -145,16 +170,22 @@ impl BundleProtocol {
     /// Returns the [`BundleFormat`] for this protocol.
     pub const fn bundle_format(self) -> BundleFormat {
         match self {
-            BundleProtocol::LegacyOrchard => BundleFormat::PreNu6_3,
-            BundleProtocol::Orchard | BundleProtocol::Ironwood => BundleFormat::Nu6_3,
+            BundleProtocol::OrchardPreNu6_2 | BundleProtocol::OrchardPreNu6_3 => {
+                BundleFormat::PreNu6_3
+            }
+            BundleProtocol::OrchardPostNu6_3 | BundleProtocol::IronwoodPostNu6_3 => {
+                BundleFormat::Nu6_3
+            }
         }
     }
 
-    /// Returns the transactional [`Flags`] for this protocol.
-    pub fn flags(self) -> Flags {
+    /// Returns the transaction [`Flags`] for this protocol.
+    pub fn transaction_flags(self) -> Flags {
         match self {
-            BundleProtocol::LegacyOrchard | BundleProtocol::Ironwood => Flags::ENABLED,
-            BundleProtocol::Orchard => Flags::CROSS_ADDRESS_DISABLED,
+            BundleProtocol::OrchardPostNu6_3 => Flags::CROSS_ADDRESS_DISABLED,
+            BundleProtocol::OrchardPreNu6_2
+            | BundleProtocol::OrchardPreNu6_3
+            | BundleProtocol::IronwoodPostNu6_3 => Flags::ENABLED,
         }
     }
 
@@ -163,9 +194,37 @@ impl BundleProtocol {
     /// [`NoteVersion`]: crate::note::NoteVersion
     pub fn default_note_version(self) -> crate::note::NoteVersion {
         match self {
-            BundleProtocol::LegacyOrchard | BundleProtocol::Orchard => crate::note::NoteVersion::V2,
-            BundleProtocol::Ironwood => crate::note::NoteVersion::V3,
+            BundleProtocol::IronwoodPostNu6_3 => crate::note::NoteVersion::V3,
+            BundleProtocol::OrchardPreNu6_2
+            | BundleProtocol::OrchardPreNu6_3
+            | BundleProtocol::OrchardPostNu6_3 => crate::note::NoteVersion::V2,
         }
+    }
+
+    /// Returns the number of actions that [`Builder::new`] will produce for the
+    /// selected bundle kind with the specified numbers of spends and outputs.
+    ///
+    /// For [`BundleKind::Coinbase`], `num_spends` must be zero and the returned
+    /// count is exactly `num_outputs`.
+    ///
+    /// [`Builder::new`]: crate::builder::Builder::new
+    pub fn action_count(
+        self,
+        kind: BundleKind,
+        num_spends: usize,
+        num_outputs: usize,
+    ) -> Result<usize, BundleActionCountError> {
+        kind.bundle_type(self).num_actions(num_spends, num_outputs)
+    }
+
+    /// Compatibility alias for [`BundleProtocol::action_count`].
+    pub fn num_actions(
+        self,
+        kind: BundleKind,
+        num_spends: usize,
+        num_outputs: usize,
+    ) -> Result<usize, BundleActionCountError> {
+        self.action_count(kind, num_spends, num_outputs)
     }
 
     /// Returns the number of actions that [`Builder::new`] will produce for a
@@ -178,19 +237,10 @@ impl BundleProtocol {
         num_outputs: usize,
     ) -> Result<usize, BundleActionCountError> {
         crate::builder::BundleType::Transactional {
-            flags: self.flags(),
+            flags: self.transaction_flags(),
             bundle_required: false,
         }
         .num_actions(num_spends, num_outputs)
-    }
-
-    /// Compatibility alias for [`BundleProtocol::transactional_action_count`].
-    pub fn num_actions(
-        self,
-        num_spends: usize,
-        num_outputs: usize,
-    ) -> Result<usize, BundleActionCountError> {
-        self.transactional_action_count(num_spends, num_outputs)
     }
 
     /// Returns the number of actions that [`Builder::new_coinbase`] will produce
@@ -200,6 +250,18 @@ impl BundleProtocol {
     pub fn coinbase_action_count(self, num_outputs: usize) -> usize {
         let _ = self;
         num_outputs
+    }
+}
+
+impl BundleKind {
+    pub(crate) fn bundle_type(self, protocol: BundleProtocol) -> crate::builder::BundleType {
+        match self {
+            BundleKind::Transaction => crate::builder::BundleType::Transactional {
+                flags: protocol.transaction_flags(),
+                bundle_required: false,
+            },
+            BundleKind::Coinbase => crate::builder::BundleType::Coinbase,
+        }
     }
 }
 
@@ -1181,7 +1243,10 @@ pub(crate) mod tests {
     use proptest::prelude::*;
 
     use super::testing::{arb_bundle, arb_flags_nu6_3};
-    use super::{Authorized, Bundle, BundleError, BundleFormat, CommitmentError, Flags};
+    use super::{
+        Authorized, Bundle, BundleActionCountError, BundleError, BundleFormat, BundleKind,
+        BundleProtocol, CommitmentError, Flags,
+    };
     use crate::Proof;
 
     #[cfg(feature = "circuit")]
@@ -1226,6 +1291,84 @@ pub(crate) mod tests {
             assert_eq!(flags.to_byte(BundleFormat::PreNu6_3), pre_nu6_3);
             assert_eq!(flags.to_byte(BundleFormat::Nu6_3), nu6_3);
         }
+    }
+
+    #[test]
+    fn bundle_protocol_selects_valid_semantics() {
+        #[cfg(feature = "circuit")]
+        {
+            assert_eq!(
+                BundleProtocol::OrchardPreNu6_2.circuit_version(),
+                crate::circuit::OrchardCircuitVersion::InsecurePreNu6_2
+            );
+            assert_eq!(
+                BundleProtocol::OrchardPreNu6_3.circuit_version(),
+                crate::circuit::OrchardCircuitVersion::FixedPostNu6_2
+            );
+            assert_eq!(
+                BundleProtocol::OrchardPostNu6_3.circuit_version(),
+                crate::circuit::OrchardCircuitVersion::PostNu6_3
+            );
+            assert_eq!(
+                BundleProtocol::IronwoodPostNu6_3.circuit_version(),
+                crate::circuit::OrchardCircuitVersion::PostNu6_3
+            );
+        }
+
+        assert_eq!(
+            BundleProtocol::OrchardPreNu6_2.bundle_format(),
+            BundleFormat::PreNu6_3
+        );
+        assert_eq!(
+            BundleProtocol::OrchardPreNu6_3.bundle_format(),
+            BundleFormat::PreNu6_3
+        );
+        assert_eq!(
+            BundleProtocol::OrchardPostNu6_3.bundle_format(),
+            BundleFormat::Nu6_3
+        );
+        assert_eq!(
+            BundleProtocol::IronwoodPostNu6_3.bundle_format(),
+            BundleFormat::Nu6_3
+        );
+
+        assert_eq!(
+            BundleProtocol::OrchardPostNu6_3.transaction_flags(),
+            Flags::CROSS_ADDRESS_DISABLED
+        );
+        assert_eq!(
+            BundleProtocol::IronwoodPostNu6_3.transaction_flags(),
+            Flags::ENABLED
+        );
+
+        assert_eq!(
+            BundleProtocol::OrchardPostNu6_3.default_note_version(),
+            crate::note::NoteVersion::V2
+        );
+        assert_eq!(
+            BundleProtocol::IronwoodPostNu6_3.default_note_version(),
+            crate::note::NoteVersion::V3
+        );
+    }
+
+    #[test]
+    fn protocol_action_count_respects_bundle_kind() {
+        assert_eq!(
+            BundleProtocol::OrchardPostNu6_3.action_count(BundleKind::Transaction, 2, 1),
+            Ok(3)
+        );
+        assert_eq!(
+            BundleProtocol::IronwoodPostNu6_3.action_count(BundleKind::Transaction, 3, 2),
+            Ok(3)
+        );
+        assert_eq!(
+            BundleProtocol::IronwoodPostNu6_3.action_count(BundleKind::Coinbase, 0, 1),
+            Ok(1)
+        );
+        assert_eq!(
+            BundleProtocol::IronwoodPostNu6_3.action_count(BundleKind::Coinbase, 1, 1),
+            Err(BundleActionCountError::SpendsDisabled)
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use orchard::{
     builder::Builder,
-    bundle::BundleProtocol,
+    bundle::{BundleKind, BundleProtocol},
     circuit::{OrchardCircuitVersion, ProvingKey},
     keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey},
     note_encryption::{CompactAction, OrchardDomain},
@@ -46,7 +46,8 @@ fn bench_note_decryption(c: &mut Criterion) {
 
     let bundle = {
         let mut builder = Builder::new(
-            BundleProtocol::LegacyOrchard,
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPreNu6_3,
             Anchor::from_bytes([0; 32]).unwrap(),
         );
         // The builder pads to two actions, and shuffles their order. Add two recipients

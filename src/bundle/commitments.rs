@@ -118,9 +118,11 @@ impl BundleCommitmentDomain {
     /// `protocol`.
     pub const fn transaction(protocol: BundleProtocol) -> Self {
         match protocol {
-            BundleProtocol::LegacyOrchard => Self::ORCHARD_V5_PRE_NU6_3,
-            BundleProtocol::Orchard => Self::ORCHARD_V6,
-            BundleProtocol::Ironwood => Self::IRONWOOD_V6,
+            BundleProtocol::OrchardPreNu6_2 | BundleProtocol::OrchardPreNu6_3 => {
+                Self::ORCHARD_V5_PRE_NU6_3
+            }
+            BundleProtocol::OrchardPostNu6_3 => Self::ORCHARD_V6,
+            BundleProtocol::IronwoodPostNu6_3 => Self::IRONWOOD_V6,
         }
     }
 }

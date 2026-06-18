@@ -349,7 +349,7 @@ mod tests {
 
     use crate::{
         builder::{Builder, BundleMetadata},
-        bundle::{BundleFormat, BundleProtocol, Flags},
+        bundle::{BundleFormat, BundleKind, BundleProtocol, Flags},
         circuit::{OrchardCircuitVersion, ProvingKey, VerifyingKey},
         constants::MERKLE_DEPTH_ORCHARD,
         keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
@@ -396,7 +396,11 @@ mod tests {
         let merkle_path = MerklePath::dummy(&mut rng);
         let anchor = merkle_path.root(note.commitment().into());
 
-        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPostNu6_3,
+            anchor,
+        );
         builder.add_spend(spend_fvk, note, merkle_path).unwrap();
         builder
             .add_change_output(
@@ -425,7 +429,8 @@ mod tests {
         let recipient = fvk.address_at(0u32, Scope::External);
 
         let mut builder = Builder::new(
-            BundleProtocol::LegacyOrchard,
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPreNu6_3,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
         );
         builder
@@ -454,7 +459,8 @@ mod tests {
 
         // Run the Creator and Constructor roles.
         let mut builder = Builder::new(
-            BundleProtocol::LegacyOrchard,
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPreNu6_3,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
         );
         builder
@@ -557,7 +563,11 @@ mod tests {
         };
 
         // Run the Creator and Constructor roles.
-        let mut builder = Builder::new(BundleProtocol::LegacyOrchard, anchor);
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPreNu6_3,
+            anchor,
+        );
         builder
             .add_spend(fvk.clone(), note, merkle_path.into())
             .unwrap();
@@ -837,7 +847,11 @@ mod tests {
         let merkle_path = MerklePath::dummy(&mut rng);
         let anchor = merkle_path.root(note.commitment().into());
 
-        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPostNu6_3,
+            anchor,
+        );
         builder.add_spend(spend_fvk, note, merkle_path).unwrap();
 
         let (mut pczt_bundle, bundle_meta) = builder.build_for_pczt(&mut rng).unwrap();

@@ -11,7 +11,10 @@ use rand::{prelude::SliceRandom, CryptoRng, RngCore};
 
 use crate::{
     address::Address,
-    bundle::{Authorization, Authorized, Bundle, BundleActionCountError, BundleProtocol, Flags},
+    bundle::{
+        Authorization, Authorized, Bundle, BundleActionCountError, BundleKind, BundleProtocol,
+        Flags,
+    },
     keys::{
         FullViewingKey, OutgoingViewingKey, Scope, SpendAuthorizingKey, SpendValidatingKey,
         SpendingKey,
@@ -696,16 +699,13 @@ pub struct Builder {
 }
 
 impl Builder {
-    /// Constructs a new empty transactional builder for the given bundle protocol.
-    pub fn new(protocol: BundleProtocol, anchor: Anchor) -> Self {
+    /// Constructs a new empty builder for the given bundle kind and protocol.
+    pub fn new(kind: BundleKind, protocol: BundleProtocol, anchor: Anchor) -> Self {
         Builder {
             spends: vec![],
             outputs: vec![],
             changes: vec![],
-            bundle_type: BundleType::Transactional {
-                flags: protocol.flags(),
-                bundle_required: false,
-            },
+            bundle_type: kind.bundle_type(protocol),
             anchor,
             protocol,
         }
@@ -713,14 +713,7 @@ impl Builder {
 
     /// Constructs a new coinbase builder for the given bundle protocol.
     pub fn new_coinbase(protocol: BundleProtocol, anchor: Anchor) -> Self {
-        Builder {
-            spends: vec![],
-            outputs: vec![],
-            changes: vec![],
-            bundle_type: BundleType::Coinbase,
-            anchor,
-            protocol,
-        }
+        Builder::new(BundleKind::Coinbase, protocol, anchor)
     }
 
     /// Returns the protocol currently used by this builder.
@@ -728,10 +721,18 @@ impl Builder {
         self.protocol
     }
 
+    /// Returns whether this builder constructs a transaction or coinbase bundle.
+    pub fn kind(&self) -> BundleKind {
+        match self.bundle_type {
+            BundleType::Transactional { .. } => BundleKind::Transaction,
+            BundleType::Coinbase => BundleKind::Coinbase,
+        }
+    }
+
     /// Updates the protocol used by this builder.
     pub fn set_protocol(&mut self, protocol: BundleProtocol) {
         if let BundleType::Transactional { flags, .. } = &mut self.bundle_type {
-            *flags = protocol.flags();
+            *flags = protocol.transaction_flags();
         }
 
         self.protocol = protocol;
@@ -1037,10 +1038,7 @@ pub fn bundle<V: TryFrom<i64>>(
         rng,
         BundlePlan {
             anchor,
-            bundle_type: BundleType::Transactional {
-                flags: protocol.flags(),
-                bundle_required: false,
-            },
+            bundle_type: BundleKind::Transaction.bundle_type(protocol),
             spends,
             outputs,
             changes,
@@ -1711,7 +1709,7 @@ pub mod testing {
 
     use crate::{
         address::testing::arb_address,
-        bundle::{Authorized, Bundle, BundleProtocol},
+        bundle::{Authorized, Bundle, BundleKind, BundleProtocol},
         circuit::{OrchardCircuitVersion, ProvingKey},
         keys::{testing::arb_spending_key, FullViewingKey, SpendAuthorizingKey, SpendingKey},
         note::testing::arb_note,
@@ -1743,7 +1741,11 @@ pub mod testing {
         /// Create a bundle from the set of arbitrary bundle inputs.
         fn into_bundle<V: TryFrom<i64>>(mut self) -> Bundle<Authorized, V> {
             let fvk = FullViewingKey::from(&self.sk);
-            let mut builder = Builder::new(BundleProtocol::LegacyOrchard, self.anchor);
+            let mut builder = Builder::new(
+                BundleKind::Transaction,
+                BundleProtocol::OrchardPreNu6_3,
+                self.anchor,
+            );
 
             for (note, path) in self.notes.into_iter() {
                 builder.add_spend(fvk.clone(), note, path).unwrap();
@@ -1847,7 +1849,7 @@ mod tests {
         OutputError, OutputInfo,
     };
     use crate::{
-        bundle::{Authorized, Bundle, BundleFormat, BundleProtocol, Flags},
+        bundle::{Authorized, Bundle, BundleFormat, BundleKind, BundleProtocol, Flags},
         circuit::{OrchardCircuitVersion, ProvingKey},
         constants::MERKLE_DEPTH_ORCHARD,
         keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey},
@@ -1900,7 +1902,11 @@ mod tests {
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u32, Scope::External);
 
-        let mut builder = Builder::new(protocol, EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into());
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            protocol,
+            EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
+        );
         builder
             .add_output(None, recipient, NoteValue::from_raw(5000), [0u8; 512])
             .expect("output-only builders accept ordinary outputs");
@@ -1924,7 +1930,7 @@ mod tests {
         let pk = ProvingKey::build(OrchardCircuitVersion::FixedPostNu6_2);
         let mut rng = OsRng;
 
-        let builder = output_only_builder(&mut rng, BundleProtocol::LegacyOrchard);
+        let builder = output_only_builder(&mut rng, BundleProtocol::OrchardPreNu6_3);
         let balance: i64 = builder.value_balance().unwrap();
         assert_eq!(balance, -5000);
 
@@ -1951,7 +1957,7 @@ mod tests {
         // to its dummy spend's expanded receiver, so coinbase always uses unrestricted
         // cross-address semantics. A pool whose rules require the cross-address
         // restriction on every bundle prohibits coinbase outside this crate.
-        let builder = coinbase_output_only_builder(&mut rng, BundleProtocol::Ironwood);
+        let builder = coinbase_output_only_builder(&mut rng, BundleProtocol::IronwoodPostNu6_3);
 
         let (bundle, _) = builder
             .build::<i64>(&mut rng)
@@ -1992,7 +1998,11 @@ mod tests {
         let (note, merkle_path, anchor) =
             note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
 
-        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPostNu6_3,
+            anchor,
+        );
         assert_eq!(
             builder.add_output(
                 None,
@@ -2076,7 +2086,7 @@ mod tests {
         let mut builder = builder_with_type(
             restricted_bundle_type(true),
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-            BundleProtocol::Orchard,
+            BundleProtocol::OrchardPostNu6_3,
         );
 
         builder
@@ -2116,7 +2126,7 @@ mod tests {
             bundle::<i64>(
                 &mut rng,
                 EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-                BundleProtocol::Orchard,
+                BundleProtocol::OrchardPostNu6_3,
                 vec![],
                 vec![OutputInfo::new(
                     None,
@@ -2142,7 +2152,7 @@ mod tests {
         let (bundle, bundle_meta) = bundle::<i64>(
             &mut rng,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-            BundleProtocol::Orchard,
+            BundleProtocol::OrchardPostNu6_3,
             vec![],
             vec![],
             vec![change_output],
@@ -2205,7 +2215,8 @@ mod tests {
             FullViewingKey::from(&SpendingKey::random(&mut rng)).address_at(0u32, Scope::External);
 
         let mut builder = Builder::new(
-            BundleProtocol::LegacyOrchard,
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPreNu6_3,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
         );
 
@@ -2245,7 +2256,7 @@ mod tests {
                 bundle_required: false,
             },
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-            BundleProtocol::Orchard,
+            BundleProtocol::OrchardPostNu6_3,
         );
 
         assert_eq!(
@@ -2266,7 +2277,11 @@ mod tests {
         let (note, merkle_path, anchor) =
             note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
 
-        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPostNu6_3,
+            anchor,
+        );
         builder.add_spend(spend_fvk, note, merkle_path).unwrap();
         builder
             .add_change_output(
@@ -2303,7 +2318,8 @@ mod tests {
         // A change-only bundle: the padding dummy spend is signed during `prepare`, so
         // a single `sign` call with the change key completes the actions.
         let mut builder = Builder::new(
-            BundleProtocol::Orchard,
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPostNu6_3,
             EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
         );
         builder
@@ -2342,7 +2358,11 @@ mod tests {
         let (note, merkle_path, anchor) =
             note_with_path(&mut rng, spend_recipient, NoteValue::from_raw(15_000));
 
-        let mut builder = Builder::new(BundleProtocol::Orchard, anchor);
+        let mut builder = Builder::new(
+            BundleKind::Transaction,
+            BundleProtocol::OrchardPostNu6_3,
+            anchor,
+        );
         builder.add_spend(spend_fvk, note, merkle_path).unwrap();
         builder
             .add_change_output(
@@ -2384,7 +2404,7 @@ mod tests {
             let builder = builder_with_type(
                 restricted_bundle_type(true),
                 EMPTY_ROOTS[MERKLE_DEPTH_ORCHARD].into(),
-                BundleProtocol::Orchard,
+                BundleProtocol::OrchardPostNu6_3,
             );
 
             builder.build::<i64>(rng).unwrap().unwrap().0
