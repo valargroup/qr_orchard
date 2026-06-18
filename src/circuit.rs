@@ -260,11 +260,11 @@ impl Circuit {
         let sender_address = spend.note.recipient();
         let rho_old = spend.note.rho();
         let psi_old = spend.note.rseed().psi(&rho_old);
-        let rcm_old = spend.note.rseed().rcm(&rho_old);
+        let rcm_old = spend.note.rcm();
 
         let rho_new = output_note.rho();
         let psi_new = output_note.rseed().psi(&rho_new);
-        let rcm_new = output_note.rseed().rcm(&rho_new);
+        let rcm_new = output_note.rcm();
 
         Circuit {
             path: Value::known(spend.merkle_path.auth_path()),
@@ -1394,7 +1394,7 @@ mod tests {
     use crate::{
         bundle::{BundleFormat, Flags},
         keys::SpendValidatingKey,
-        note::{Note, Rho},
+        note::{Note, NoteVersion, Rho},
         tree::MerklePath,
         value::{ValueCommitTrapdoor, ValueCommitment},
     };
@@ -1422,7 +1422,7 @@ mod tests {
         circuit_version: OrchardCircuitVersion,
         output_matches_spend: bool,
     ) -> (Circuit, Instance) {
-        let (_, fvk, spent_note) = Note::dummy(&mut rng, None);
+        let (_, fvk, spent_note) = Note::dummy(&mut rng, None, NoteVersion::DEFAULT);
 
         let sender_address = spent_note.recipient();
         let nk = *fvk.nk();
@@ -1434,10 +1434,16 @@ mod tests {
         let rk = ak.randomize(&alpha);
 
         let output_note = if output_matches_spend {
-            Note::new(sender_address, spent_note.value(), rho, &mut rng)
+            Note::new(
+                sender_address,
+                spent_note.value(),
+                rho,
+                &mut rng,
+                NoteVersion::DEFAULT,
+            )
         } else {
             loop {
-                let (_, _, output_note) = Note::dummy(&mut rng, Some(rho));
+                let (_, _, output_note) = Note::dummy(&mut rng, Some(rho), NoteVersion::DEFAULT);
                 if !sender_address.same_expanded_receiver(&output_note.recipient()) {
                     break output_note;
                 }

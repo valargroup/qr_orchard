@@ -21,7 +21,10 @@ use memuse::DynamicUsage;
 use crate::{
     action::Action,
     address::Address,
-    bundle::commitments::{hash_bundle_auth_data, hash_bundle_txid_data},
+    bundle::commitments::{
+        hash_bundle_auth_data, hash_bundle_auth_data_with_domain, hash_bundle_txid_data,
+        hash_bundle_txid_data_with_domain, BundleCommitmentDomain,
+    },
     keys::{IncomingViewingKey, OutgoingViewingKey, PreparedIncomingViewingKey},
     note::Note,
     note_encryption::OrchardDomain,
@@ -92,6 +95,148 @@ pub enum BundleFormat {
     /// NU6.3 transaction formats, where bit 2 is `enableCrossAddress`.
     Nu6_3,
 }
+
+/// Selects the pool and circuit semantics for an Orchard bundle.
+///
+/// Encodes the correlated choices a caller would otherwise have to pass
+/// separately: circuit version, flag-byte format, default note version, and
+/// the cross-address policy for transactional bundles.
+///
+/// Coinbase bundles use the protocol for circuit selection and default note
+/// version. Their flags are fixed to spends disabled, outputs enabled, and
+/// cross-address transfers enabled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleProtocol {
+    /// The Orchard pool before NU6.3 bundle flag semantics.
+    ///
+    /// Uses the post-NU6.2 fixed Orchard circuit and pre-NU6.3 flag-byte format.
+    /// Cross-address transfers are permitted and notes use the V2 plaintext format.
+    LegacyOrchard,
+    /// The Orchard pool at NU6.3+.
+    ///
+    /// Uses the post-NU6.3 circuit and NU6.3 flag-byte format. For transactional
+    /// bundles, `enableCrossAddress = 0` is required by consensus, so
+    /// cross-address transfers are prohibited. Notes use V2 plaintexts.
+    Orchard,
+    /// The Ironwood pool.
+    ///
+    /// Uses the post-NU6.3 circuit and NU6.3 flag-byte format. Transactional
+    /// bundles enable cross-address transfers. Notes use V3 quantum-recoverable
+    /// plaintexts.
+    Ironwood,
+}
+
+#[cfg(feature = "circuit")]
+impl BundleProtocol {
+    /// Returns the [`OrchardCircuitVersion`] for this protocol.
+    ///
+    /// [`OrchardCircuitVersion`]: crate::circuit::OrchardCircuitVersion
+    pub fn circuit_version(self) -> crate::circuit::OrchardCircuitVersion {
+        match self {
+            BundleProtocol::LegacyOrchard => crate::circuit::OrchardCircuitVersion::FixedPostNu6_2,
+            BundleProtocol::Orchard | BundleProtocol::Ironwood => {
+                crate::circuit::OrchardCircuitVersion::PostNu6_3
+            }
+        }
+    }
+}
+
+impl BundleProtocol {
+    /// Returns the [`BundleFormat`] for this protocol.
+    pub const fn bundle_format(self) -> BundleFormat {
+        match self {
+            BundleProtocol::LegacyOrchard => BundleFormat::PreNu6_3,
+            BundleProtocol::Orchard | BundleProtocol::Ironwood => BundleFormat::Nu6_3,
+        }
+    }
+
+    /// Returns the transactional [`Flags`] for this protocol.
+    pub fn flags(self) -> Flags {
+        match self {
+            BundleProtocol::LegacyOrchard | BundleProtocol::Ironwood => Flags::ENABLED,
+            BundleProtocol::Orchard => Flags::CROSS_ADDRESS_DISABLED,
+        }
+    }
+
+    /// Returns the default [`NoteVersion`] for notes created in this protocol.
+    ///
+    /// [`NoteVersion`]: crate::note::NoteVersion
+    pub fn default_note_version(self) -> crate::note::NoteVersion {
+        match self {
+            BundleProtocol::LegacyOrchard | BundleProtocol::Orchard => crate::note::NoteVersion::V2,
+            BundleProtocol::Ironwood => crate::note::NoteVersion::V3,
+        }
+    }
+
+    /// Returns the number of actions that [`Builder::new`] will produce for a
+    /// transactional bundle with the specified numbers of spends and outputs.
+    ///
+    /// [`Builder::new`]: crate::builder::Builder::new
+    pub fn transactional_action_count(
+        self,
+        num_spends: usize,
+        num_outputs: usize,
+    ) -> Result<usize, BundleActionCountError> {
+        crate::builder::BundleType::Transactional {
+            flags: self.flags(),
+            bundle_required: false,
+        }
+        .num_actions(num_spends, num_outputs)
+    }
+
+    /// Compatibility alias for [`BundleProtocol::transactional_action_count`].
+    pub fn num_actions(
+        self,
+        num_spends: usize,
+        num_outputs: usize,
+    ) -> Result<usize, BundleActionCountError> {
+        self.transactional_action_count(num_spends, num_outputs)
+    }
+
+    /// Returns the number of actions that [`Builder::new_coinbase`] will produce
+    /// after adding `num_outputs` outputs.
+    ///
+    /// [`Builder::new_coinbase`]: crate::builder::Builder::new_coinbase
+    pub fn coinbase_action_count(self, num_outputs: usize) -> usize {
+        let _ = self;
+        num_outputs
+    }
+}
+
+/// Errors that can occur when computing the number of actions for a bundle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleActionCountError {
+    /// The requested spend and output counts overflowed `usize`.
+    InputCountOverflow,
+    /// Spends are disabled, so `num_spends` must be zero.
+    SpendsDisabled,
+    /// Outputs are disabled, so `num_outputs` must be zero.
+    OutputsDisabled,
+}
+
+impl BundleActionCountError {
+    /// Returns a stable message for this error.
+    pub const fn as_static_str(self) -> &'static str {
+        match self {
+            BundleActionCountError::InputCountOverflow => "num_spends + num_outputs overflowed",
+            BundleActionCountError::SpendsDisabled => {
+                "Spends are disabled, so num_spends must be zero"
+            }
+            BundleActionCountError::OutputsDisabled => {
+                "Outputs are disabled, so num_outputs must be zero"
+            }
+        }
+    }
+}
+
+impl fmt::Display for BundleActionCountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_static_str())
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for BundleActionCountError {}
 
 /// Orchard-specific flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -574,6 +719,26 @@ impl<T: Authorization, V: Copy + Into<i64>> Bundle<T, V> {
             .ok_or(CommitmentError::UnrepresentableFlags)
     }
 
+    /// Computes a transaction commitment to the effects of this bundle for the
+    /// specified [`BundleProtocol`].
+    pub fn commitment_for_protocol(
+        &self,
+        protocol: BundleProtocol,
+    ) -> Result<BundleCommitment, CommitmentError> {
+        self.commitment_for_domain(BundleCommitmentDomain::transaction(protocol))
+    }
+
+    /// Computes a commitment to the effects of this bundle under the specified
+    /// bundle commitment domain.
+    pub fn commitment_for_domain(
+        &self,
+        domain: BundleCommitmentDomain,
+    ) -> Result<BundleCommitment, CommitmentError> {
+        hash_bundle_txid_data_with_domain(self, domain)
+            .map(BundleCommitment)
+            .ok_or(CommitmentError::UnrepresentableFlags)
+    }
+
     /// Returns the transaction binding validating key for this bundle.
     ///
     /// This can be used to validate the [`Authorized::binding_signature`] returned from
@@ -751,6 +916,24 @@ impl<V> Bundle<Authorized, V> {
     /// This together with `Bundle::commitment` bind the entire bundle.
     pub fn authorizing_commitment(&self) -> BundleAuthorizingCommitment {
         BundleAuthorizingCommitment(hash_bundle_auth_data(self))
+    }
+
+    /// Computes a transaction commitment to the authorizing data within this
+    /// bundle for the specified [`BundleProtocol`].
+    pub fn authorizing_commitment_for_protocol(
+        &self,
+        protocol: BundleProtocol,
+    ) -> BundleAuthorizingCommitment {
+        self.authorizing_commitment_for_domain(BundleCommitmentDomain::transaction(protocol))
+    }
+
+    /// Computes a commitment to the authorizing data within this bundle under
+    /// the specified bundle commitment domain.
+    pub fn authorizing_commitment_for_domain(
+        &self,
+        domain: BundleCommitmentDomain,
+    ) -> BundleAuthorizingCommitment {
+        BundleAuthorizingCommitment(hash_bundle_auth_data_with_domain(self, domain))
     }
 
     /// Verifies the proof for this bundle.
